@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import * as React from "react";
+import { logout } from "@/app/actions/auth";
 
 import {
   SidebarGroup,
@@ -19,6 +20,7 @@ export function NavSecondary({
     title: string;
     url: string;
     icon?: React.ReactNode;
+    isLogout?: boolean;
   }[];
 } & React.ComponentPropsWithoutRef<typeof SidebarGroup>) {
   return (
@@ -27,12 +29,23 @@ export function NavSecondary({
         <SidebarMenu>
           {items.map((item) => (
             <SidebarMenuItem key={item.title}>
-              <SidebarMenuButton asChild>
-                <Link href={item.url}>
-                  {item.icon ?? null}
-                  <span>{item.title}</span>
-                </Link>
-              </SidebarMenuButton>
+              {item.isLogout ? (
+                <SidebarMenuButton asChild>
+                  <form action={logout} className="w-full">
+                    <button type="submit" className="flex w-full items-center gap-2 text-left">
+                      {item.icon ?? null}
+                      <span>{item.title}</span>
+                    </button>
+                  </form>
+                </SidebarMenuButton>
+              ) : (
+                <SidebarMenuButton asChild>
+                  <Link href={item.url}>
+                    {item.icon ?? null}
+                    <span>{item.title}</span>
+                  </Link>
+                </SidebarMenuButton>
+              )}
             </SidebarMenuItem>
           ))}
         </SidebarMenu>

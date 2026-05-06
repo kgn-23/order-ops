@@ -10,11 +10,14 @@ import {
   type ReactNode,
 } from "react";
 import Link from "next/link";
+import { ArrowUpIcon, PhoneIcon } from "lucide-react";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { toast } from "sonner";
 
 import { assignOrders, bulkSetOrderStage } from "@/app/actions/phase1";
 import type {
+  OrdersAttemptFilter,
+  OrdersFollowUpFilter,
   OrdersPageRow,
   OrdersSearchKey,
   OrdersSortBy,
@@ -35,6 +38,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { OrderDetailsDrawer } from "@/components/orders/order-details-drawer";
+import { OrderRowActions } from "@/components/orders/order-row-actions";
 
 const ROW_HEIGHT_PX = 52;
 
@@ -48,6 +52,11 @@ export type AdminOrdersTableProps = {
     delivered: number;
     inTransit: number;
     rto: number;
+    calledOrders: number;
+    notCalledOrders: number;
+    withFollowUpOrders: number;
+    withoutFollowUpOrders: number;
+    totalFollowUps: number;
   };
   pagination: {
     page: number;
@@ -59,11 +68,16 @@ export type AdminOrdersTableProps = {
     searchKey: OrdersSearchKey;
     q: string;
     stage: OrdersStageFilter;
+    attemptFilter: OrdersAttemptFilter;
+    followUpFilter: OrdersFollowUpFilter;
     sortBy: OrdersSortBy;
     sortDir: OrdersSortDir;
   };
   callers: Array<{ id: string; name: string; email: string }>;
   actions?: ReactNode;
+  enableBulkActions?: boolean;
+  showLastAttemptColumn?: boolean;
+  extraQueryParams?: Record<string, string | undefined>;
 };
 
 function buildHref(params: {
@@ -72,8 +86,11 @@ function buildHref(params: {
   searchKey: OrdersSearchKey;
   q: string;
   stage: OrdersStageFilter;
+  attemptFilter: OrdersAttemptFilter;
+  followUpFilter: OrdersFollowUpFilter;
   sortBy: OrdersSortBy;
   sortDir: OrdersSortDir;
+  extraQueryParams?: Record<string, string | undefined>;
 }) {
   const sp = new URLSearchParams();
   sp.set("page", String(params.page));
@@ -81,8 +98,15 @@ function buildHref(params: {
   sp.set("searchKey", params.searchKey);
   if (params.q) sp.set("q", params.q);
   sp.set("stage", params.stage);
+  sp.set("attemptFilter", params.attemptFilter);
+  sp.set("followUpFilter", params.followUpFilter);
   sp.set("sortBy", params.sortBy);
   sp.set("sortDir", params.sortDir);
+  if (params.extraQueryParams) {
+    Object.entries(params.extraQueryParams).forEach(([key, value]) => {
+      if (value) sp.set(key, value);
+    });
+  }
   return `?${sp.toString()}`;
 }
 
@@ -114,6 +138,25 @@ function formatCreated(iso: string) {
   }
 }
 
+function formatAttempt(iso: string | null | undefined) {
+  if (!iso) return "";
+  try {
+    return new Date(iso).toLocaleString(undefined, {
+      month: "short",
+      day: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+  } catch {
+    return "";
+  }
+}
+
+function toTelHref(phone: string) {
+  const normalized = phone.replace(/[^\d+]/g, "");
+  return `tel:${normalized}`;
+}
+
 export function AdminOrdersTable({
   title,
   rows,
@@ -122,8 +165,15 @@ export function AdminOrdersTable({
   filters,
   callers,
   actions,
+  enableBulkActions = true,
+  showLastAttemptColumn = true,
+  extraQueryParams,
 }: AdminOrdersTableProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
+  const [showAllKpis, setShowAllKpis] = useState(false);
+  const [showMobileKpis, setShowMobileKpis] = useState(false);
+  const [showMobileFilters, setShowMobileFilters] = useState(false);
+  const [showScrollTop, setShowScrollTop] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [assigneeId, setAssigneeId] = useState<string>("");
   const [stageBulk, setStageBulk] = useState<string>("");
@@ -133,6 +183,15 @@ export function AdminOrdersTable({
   useEffect(() => {
     setSelected(new Set());
   }, [rows]);
+
+  useEffect(() => {
+    const onScroll = () => {
+      setShowScrollTop(window.scrollY > 240);
+    };
+    onScroll();
+    window.addEventListener("scroll", onScroll, { passive: true });
+    return () => window.removeEventListener("scroll", onScroll);
+  }, []);
 
   const rowVirtualizer = useVirtualizer({
     count: rows.length,
@@ -147,10 +206,13 @@ export function AdminOrdersTable({
       searchKey: filters.searchKey,
       q: filters.q,
       stage: filters.stage,
+      attemptFilter: filters.attemptFilter,
+      followUpFilter: filters.followUpFilter,
       sortBy: filters.sortBy,
       sortDir: filters.sortDir,
+      extraQueryParams,
     }),
-    [pagination.pageSize, filters],
+    [pagination.pageSize, filters, extraQueryParams],
   );
 
   const sortLink = useCallback(
@@ -258,46 +320,94 @@ export function AdminOrdersTable({
         <CardTitle>{title}</CardTitle>
         <CardAction className="flex items-center gap-2">
           {actions}
-          <Button
-            type="button"
-            variant="outline"
-            onClick={() => setShowBulkActions((prev) => !prev)}
-            aria-expanded={showBulkActions}
-            aria-controls="admin-orders-bulk-actions"
-          >
-            {showBulkActions ? "Hide bulk actions" : "Show bulk actions"}
-          </Button>
+          {enableBulkActions ? (
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => setShowBulkActions((prev) => !prev)}
+              aria-expanded={showBulkActions}
+              aria-controls="admin-orders-bulk-actions"
+            >
+              {showBulkActions ? "Hide bulk actions" : "Show bulk actions"}
+            </Button>
+          ) : null}
         </CardAction>
       </CardHeader>
       <CardContent className="flex flex-col gap-4">
-        <div className="grid gap-2 md:grid-cols-3 xl:grid-cols-6">
-          <div className="rounded-md border p-3">
-            <p className="text-xs text-muted-foreground">Total</p>
-            <p className="text-lg font-semibold">{counts.total}</p>
+        <div className="space-y-2">
+          <div className="flex items-center gap-2 md:hidden">
+            <Button type="button" variant="outline" size="sm" onClick={() => setShowMobileFilters((prev) => !prev)}>
+              {showMobileFilters ? "Hide filters" : "Show filters"}
+            </Button>
+            <Button type="button" variant="outline" size="sm" onClick={() => setShowMobileKpis((prev) => !prev)}>
+              {showMobileKpis ? "Hide KPIs" : "Show KPIs"}
+            </Button>
           </div>
-          <div className="rounded-md border p-3">
-            <p className="text-xs text-muted-foreground">Assigned</p>
-            <p className="text-lg font-semibold">{counts.assigned}</p>
+          <div className={`${showMobileKpis ? "grid" : "hidden"} gap-2 md:grid md:grid-cols-2 xl:grid-cols-4`}>
+            <div className="rounded-md border p-3">
+              <p className="text-xs text-muted-foreground">Total</p>
+              <p className="text-lg font-semibold">{counts.total}</p>
+            </div>
+            <div className="rounded-md border p-3">
+              <p className="text-xs text-muted-foreground">Not Called</p>
+              <p className="text-lg font-semibold">{counts.notCalledOrders}</p>
+            </div>
+            <div className="rounded-md border p-3">
+              <p className="text-xs text-muted-foreground">With Follow-up</p>
+              <p className="text-lg font-semibold">{counts.withFollowUpOrders}</p>
+            </div>
+            <div className="rounded-md border p-3">
+              <p className="text-xs text-muted-foreground">Without Follow-up</p>
+              <p className="text-lg font-semibold">{counts.withoutFollowUpOrders}</p>
+            </div>
           </div>
-          <div className="rounded-md border p-3">
-            <p className="text-xs text-muted-foreground">Unassigned</p>
-            <p className="text-lg font-semibold">{counts.unassigned}</p>
-          </div>
-          <div className="rounded-md border p-3">
-            <p className="text-xs text-muted-foreground">Delivered</p>
-            <p className="text-lg font-semibold">{counts.delivered}</p>
-          </div>
-          <div className="rounded-md border p-3">
-            <p className="text-xs text-muted-foreground">In Transit</p>
-            <p className="text-lg font-semibold">{counts.inTransit}</p>
-          </div>
-          <div className="rounded-md border p-3">
-            <p className="text-xs text-muted-foreground">RTO</p>
-            <p className="text-lg font-semibold">{counts.rto}</p>
+          {showAllKpis ? (
+            <div
+              className={`${
+                showMobileKpis ? "grid" : "hidden"
+              } gap-2 md:grid md:grid-cols-3 xl:grid-cols-6 2xl:grid-cols-8`}
+            >
+              <div className="rounded-md border p-3">
+                <p className="text-xs text-muted-foreground">Assigned</p>
+                <p className="text-lg font-semibold">{counts.assigned}</p>
+              </div>
+              <div className="rounded-md border p-3">
+                <p className="text-xs text-muted-foreground">Unassigned</p>
+                <p className="text-lg font-semibold">{counts.unassigned}</p>
+              </div>
+              <div className="rounded-md border p-3">
+                <p className="text-xs text-muted-foreground">Delivered</p>
+                <p className="text-lg font-semibold">{counts.delivered}</p>
+              </div>
+              <div className="rounded-md border p-3">
+                <p className="text-xs text-muted-foreground">In Transit</p>
+                <p className="text-lg font-semibold">{counts.inTransit}</p>
+              </div>
+              <div className="rounded-md border p-3">
+                <p className="text-xs text-muted-foreground">RTO</p>
+                <p className="text-lg font-semibold">{counts.rto}</p>
+              </div>
+              <div className="rounded-md border p-3">
+                <p className="text-xs text-muted-foreground">Called</p>
+                <p className="text-lg font-semibold">{counts.calledOrders}</p>
+              </div>
+              <div className="rounded-md border p-3">
+                <p className="text-xs text-muted-foreground">Total Follow-ups</p>
+                <p className="text-lg font-semibold">{counts.totalFollowUps}</p>
+              </div>
+            </div>
+          ) : null}
+          <div className={showMobileKpis ? "block" : "hidden md:block"}>
+            <Button type="button" variant="ghost" size="sm" onClick={() => setShowAllKpis((prev) => !prev)}>
+              {showAllKpis ? "Show less KPIs" : "Show more KPIs"}
+            </Button>
           </div>
         </div>
 
-        <form className="grid gap-3 md:grid-cols-4 lg:grid-cols-5" method="get">
+        <form
+          className={`${showMobileFilters ? "grid" : "hidden"} gap-3 md:grid md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-7`}
+          method="get"
+        >
           <input type="hidden" name="page" value="1" />
           <input type="hidden" name="sortBy" value={filters.sortBy} />
           <input type="hidden" name="sortDir" value={filters.sortDir} />
@@ -358,17 +468,60 @@ export function AdminOrdersTable({
               <option value="300">300</option>
             </select>
           </div>
+          <div className="flex flex-col gap-2">
+            <label className="text-sm font-medium" htmlFor="attemptFilter">
+              Call Status
+            </label>
+            <select
+              id="attemptFilter"
+              name="attemptFilter"
+              defaultValue={filters.attemptFilter}
+              className="h-9 rounded-md border bg-background px-3 text-sm"
+            >
+              <option value="ALL">All</option>
+              <option value="CALLED">Called</option>
+              <option value="NOT_CALLED">Not Called</option>
+            </select>
+          </div>
+          <div className="flex flex-col gap-2">
+            <label className="text-sm font-medium" htmlFor="followUpFilter">
+              Follow-up
+            </label>
+            <select
+              id="followUpFilter"
+              name="followUpFilter"
+              defaultValue={filters.followUpFilter}
+              className="h-9 rounded-md border bg-background px-3 text-sm"
+            >
+              <option value="ALL">All</option>
+              <option value="WITH_FOLLOW_UP">With Follow-up</option>
+              <option value="WITHOUT_FOLLOW_UP">Without Follow-up</option>
+            </select>
+          </div>
           <div className="flex flex-wrap items-end gap-2">
             <Button type="submit">Apply</Button>
             <Button type="button" variant="outline" asChild>
-              <Link href="?page=1&pageSize=50&searchKey=customerName&stage=ALL&sortBy=createdAt&sortDir=desc">
+              <Link
+                href={buildHref({
+                  page: 1,
+                  pageSize: 50,
+                  searchKey: "customerName",
+                  q: "",
+                  stage: "ALL",
+                  attemptFilter: "ALL",
+                  followUpFilter: "ALL",
+                  sortBy: "createdAt",
+                  sortDir: "desc",
+                  extraQueryParams,
+                })}
+              >
                 Reset
               </Link>
             </Button>
           </div>
         </form>
 
-        {showBulkActions ? (
+        {enableBulkActions && showBulkActions ? (
           <div id="admin-orders-bulk-actions" className="flex flex-col gap-3 rounded-md border p-3">
             <p className="text-sm font-medium">Bulk actions</p>
             <div className="flex flex-col gap-3 lg:flex-row lg:flex-wrap lg:items-end">
@@ -420,30 +573,94 @@ export function AdminOrdersTable({
           </div>
         ) : null}
 
+        {/* Mobile top pagination */}
+        <div className="sticky top-2 z-20 rounded-lg border bg-background/95 p-2 shadow-sm backdrop-blur md:hidden">
+          <div className="grid grid-cols-4 gap-2">
+            <Button variant="outline" size="sm" disabled={pagination.page <= 1} asChild>
+              <Link href={pageHref(1)} aria-disabled={pagination.page <= 1}>
+                First
+              </Link>
+            </Button>
+            <Button variant="outline" size="sm" disabled={pagination.page <= 1} asChild>
+              <Link href={pageHref(Math.max(1, pagination.page - 1))} aria-disabled={pagination.page <= 1}>
+                Prev
+              </Link>
+            </Button>
+            <Button variant="outline" size="sm" disabled={pagination.page >= pagination.totalPages} asChild>
+              <Link
+                href={pageHref(Math.min(pagination.totalPages, pagination.page + 1))}
+                aria-disabled={pagination.page >= pagination.totalPages}
+              >
+                Next
+              </Link>
+            </Button>
+            <Button variant="outline" size="sm" disabled={pagination.page >= pagination.totalPages} asChild>
+              <Link href={pageHref(pagination.totalPages)} aria-disabled={pagination.page >= pagination.totalPages}>
+                Last
+              </Link>
+            </Button>
+          </div>
+          <p className="mt-2 text-center text-xs text-muted-foreground">
+            Page {pagination.page} / {pagination.totalPages}
+          </p>
+        </div>
+
         {/* Mobile cards */}
         <div className="flex flex-col gap-3 md:hidden">
           {rows.length === 0 ? (
             <p className="text-center text-sm text-muted-foreground">No orders found for the selected filters.</p>
           ) : (
             rows.map((row) => (
-              <div key={row.id} className="flex flex-col gap-2 rounded-lg border p-3">
-                <div className="flex items-start justify-between gap-2">
-                  <Checkbox
-                    checked={selected.has(row.id)}
-                    onCheckedChange={() => toggleRow(row.id)}
-                    aria-label={`Select order ${row.customerName}`}
-                  />
-                  <Badge variant="outline">{row.currentStage}</Badge>
+              <div key={row.id} className="rounded-xl border bg-card p-3 shadow-sm">
+                <div className="mb-2 flex items-start justify-between gap-2">
+                  <div className="flex items-center gap-2">
+                    {enableBulkActions ? (
+                      <Checkbox
+                        checked={selected.has(row.id)}
+                        onCheckedChange={() => toggleRow(row.id)}
+                        aria-label={`Select order ${row.customerName}`}
+                      />
+                    ) : null}
+                    <p className="text-sm font-semibold text-primary">#{row.id.slice(-5).toUpperCase()}</p>
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    <Badge variant="outline">{row.currentStage}</Badge>
+                    <Badge variant="secondary">{row.trackingNumber ? "TRACKED" : "NO TRACKING"}</Badge>
+                  </div>
                 </div>
-                <p className="font-medium">{row.customerName}</p>
-                <p className="text-sm text-muted-foreground">{row.customerPhone}</p>
-                <p className="text-sm">
-                  {row.city}, {row.state}
-                </p>
-                <p className="text-sm">Tracking: {row.trackingNumber ?? "—"}</p>
-                <p className="text-sm">Assigned: {row.assignedTo ?? "—"}</p>
-                <p className="text-xs text-muted-foreground">{formatCreated(row.createdAt)}</p>
-                <div>
+
+                <div className="mb-2">
+                  <p className="text-lg font-semibold leading-tight">{row.customerName}</p>
+                  <p className="text-sm text-muted-foreground">{row.customerPhone}</p>
+                </div>
+
+                <div className="mb-2 flex items-center justify-between gap-2 text-sm">
+                  <p className="truncate text-muted-foreground">
+                    {row.city}, {row.state}
+                  </p>
+                  <p className="shrink-0 text-xs text-muted-foreground">{formatCreated(row.createdAt)}</p>
+                </div>
+
+                {showLastAttemptColumn ? (
+                  <div className="mb-3 flex items-center gap-2 text-sm">
+                    <p className="text-muted-foreground">Last call</p>
+                    <Badge variant="secondary">{row.lastAttemptOutcome ?? "NOT_CALLED"}</Badge>
+                    <p className="min-h-4 text-xs text-muted-foreground">{formatAttempt(row.lastAttemptAt)}</p>
+                  </div>
+                ) : null}
+
+                <div className="mb-2 rounded-md border border-dashed p-2 text-xs text-muted-foreground">
+                  Assigned: <span className="font-medium text-foreground">{row.assignedTo ?? "Unassigned"}</span>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <Button asChild className="bg-green-600 text-white hover:bg-green-700">
+                    <a href={toTelHref(row.customerPhone)}>
+                      <PhoneIcon className="mr-1 size-4" />
+                      Call
+                    </a>
+                  </Button>
+                  <OrderRowActions orderId={row.id} customerName={row.customerName} />
                   <OrderDetailsDrawer orderId={row.id} customerName={row.customerName} />
                 </div>
               </div>
@@ -459,15 +676,21 @@ export function AdminOrdersTable({
           aria-label="Orders list"
         >
           <div
-            className="sticky top-0 z-10 grid grid-cols-[40px_112px_minmax(120px,1fr)_120px_minmax(100px,1fr)_120px_128px_104px_88px] gap-2 border-b bg-background px-2 py-2 text-xs font-medium text-muted-foreground sm:text-sm"
+            className={`sticky top-0 z-10 grid gap-2 border-b bg-background px-2 py-2 text-xs font-medium text-muted-foreground sm:text-sm ${
+              showLastAttemptColumn
+                ? "grid-cols-[40px_112px_minmax(120px,1fr)_120px_minmax(100px,1fr)_120px_128px_140px_104px_150px_88px]"
+                : "grid-cols-[40px_112px_minmax(120px,1fr)_120px_minmax(100px,1fr)_120px_128px_104px_150px_88px]"
+            }`}
             role="row"
           >
             <div className="flex items-center justify-center" role="columnheader">
-              <Checkbox
-                checked={headerCheckboxState}
-                onCheckedChange={toggleAll}
-                aria-label="Select all rows on this page"
-              />
+              {enableBulkActions ? (
+                <Checkbox
+                  checked={headerCheckboxState}
+                  onCheckedChange={toggleAll}
+                  aria-label="Select all rows on this page"
+                />
+              ) : null}
             </div>
             <div role="columnheader">
               <Link
@@ -491,6 +714,7 @@ export function AdminOrdersTable({
             <div role="columnheader">Location</div>
             <div role="columnheader">Tracking</div>
             <div role="columnheader">Assigned To</div>
+            {showLastAttemptColumn ? <div role="columnheader">Last Attempt</div> : null}
             <div role="columnheader">
               <Link
                 href={sortLink("currentStage")}
@@ -500,6 +724,7 @@ export function AdminOrdersTable({
                 Status
               </Link>
             </div>
+            <div role="columnheader">Actions</div>
             <div role="columnheader">More</div>
           </div>
           {rows.length === 0 ? (
@@ -513,18 +738,24 @@ export function AdminOrdersTable({
                   <div
                     key={row.id}
                     role="row"
-                    className="absolute left-0 grid w-full grid-cols-[40px_112px_minmax(120px,1fr)_120px_minmax(100px,1fr)_120px_128px_104px_88px] gap-2 border-b px-2 py-2"
+                    className={`absolute left-0 grid w-full gap-2 border-b px-2 py-2 ${
+                      showLastAttemptColumn
+                        ? "grid-cols-[40px_112px_minmax(120px,1fr)_120px_minmax(100px,1fr)_120px_128px_140px_104px_150px_88px]"
+                        : "grid-cols-[40px_112px_minmax(120px,1fr)_120px_minmax(100px,1fr)_120px_128px_104px_150px_88px]"
+                    }`}
                     style={{
                       transform: `translateY(${vr.start}px)`,
                       height: `${vr.size}px`,
                     }}
                   >
                     <div className="flex items-center justify-center" role="gridcell">
-                      <Checkbox
-                        checked={selected.has(row.id)}
-                        onCheckedChange={() => toggleRow(row.id)}
-                        aria-label={`Select order ${row.customerName}`}
-                      />
+                      {enableBulkActions ? (
+                        <Checkbox
+                          checked={selected.has(row.id)}
+                          onCheckedChange={() => toggleRow(row.id)}
+                          aria-label={`Select order ${row.customerName}`}
+                        />
+                      ) : null}
                     </div>
                     <div className="flex min-h-[52px] items-center truncate" role="gridcell" title={formatCreated(row.createdAt)}>
                       {formatCreated(row.createdAt)}
@@ -544,8 +775,19 @@ export function AdminOrdersTable({
                     <div className="flex min-h-[52px] items-center truncate" role="gridcell">
                       {row.assignedTo ?? "—"}
                     </div>
+                    {showLastAttemptColumn ? (
+                      <div className="flex min-h-[52px] items-center" role="gridcell">
+                        <div className="flex flex-col gap-1">
+                          <Badge variant="secondary">{row.lastAttemptOutcome ?? "NOT_CALLED"}</Badge>
+                          <span className="min-h-4 text-xs text-muted-foreground">{formatAttempt(row.lastAttemptAt)}</span>
+                        </div>
+                      </div>
+                    ) : null}
                     <div className="flex items-center" role="gridcell">
                       <Badge variant="outline">{row.currentStage}</Badge>
+                    </div>
+                    <div className="flex items-center" role="gridcell">
+                      <OrderRowActions orderId={row.id} customerName={row.customerName} />
                     </div>
                     <div className="flex items-center" role="gridcell">
                       <OrderDetailsDrawer orderId={row.id} customerName={row.customerName} />
@@ -587,6 +829,18 @@ export function AdminOrdersTable({
             </Button>
           </div>
         </div>
+
+        {showScrollTop ? (
+          <Button
+            type="button"
+            size="icon"
+            className="fixed right-4 bottom-20 z-30 rounded-full shadow-lg md:bottom-6"
+            onClick={() => window.scrollTo({ top: 0, behavior: "smooth" })}
+            aria-label="Go to top"
+          >
+            <ArrowUpIcon className="size-4" />
+          </Button>
+        ) : null}
       </CardContent>
     </Card>
   );

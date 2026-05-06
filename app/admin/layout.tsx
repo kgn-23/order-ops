@@ -1,8 +1,9 @@
 import type { ReactNode } from "react";
 import {
-  CircleHelpIcon,
   LayoutDashboardIcon,
   ListIcon,
+  LogOutIcon,
+  PhoneCallIcon,
   ScrollTextIcon,
   UsersIcon,
   WebhookIcon,
@@ -21,12 +22,13 @@ export default async function AdminLayout({ children }: { children: ReactNode })
       navMain={[
         { title: "Dashboard", url: "/admin/dashboard", icon: <LayoutDashboardIcon /> },
         { title: "Orders", url: "/admin/orders", icon: <ListIcon /> },
+        { title: "Call Logs", url: "/admin/call-logs", icon: <PhoneCallIcon /> },
         { title: "Team", url: "/admin/team", icon: <UsersIcon /> },
         { title: "Activity", url: "/admin/activity", icon: <ScrollTextIcon /> },
         { title: "Webhooks", url: "/admin/webhooks", icon: <WebhookIcon /> },
       ]}
       navSecondary={[
-        { title: "Get help", url: "mailto:support@example.com", icon: <CircleHelpIcon /> },
+        { title: "Logout", url: "#", icon: <LogOutIcon />, isLogout: true },
       ]}
     >
       {children}

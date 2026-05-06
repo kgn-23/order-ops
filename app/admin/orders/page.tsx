@@ -3,6 +3,8 @@ import { AdminOrdersTable } from "@/components/orders/admin-orders-table";
 import {
   getFormOptions,
   getOrdersPage,
+  type OrdersAttemptFilter,
+  type OrdersFollowUpFilter,
   type OrdersSearchKey,
   type OrdersSortBy,
   type OrdersSortDir,
@@ -12,6 +14,8 @@ import {
 const PAGE_SIZES = [50, 100, 200, 300] as const;
 const SEARCH_KEYS: OrdersSearchKey[] = ["customerName", "customerPhone", "trackingNumber", "city", "state"];
 const STAGE_FILTERS: OrdersStageFilter[] = ["ALL", "BOOKED", "IN_TRANSIT", "DELIVERED", "RTO", "OTHER"];
+const ATTEMPT_FILTERS: OrdersAttemptFilter[] = ["ALL", "CALLED", "NOT_CALLED"];
+const FOLLOW_UP_FILTERS: OrdersFollowUpFilter[] = ["ALL", "WITH_FOLLOW_UP", "WITHOUT_FOLLOW_UP"];
 const SORT_BY: OrdersSortBy[] = ["createdAt", "currentStage", "customerName"];
 const SORT_DIR: OrdersSortDir[] = ["asc", "desc"];
 
@@ -31,6 +35,8 @@ export default async function AdminOrdersPage({ searchParams }: AdminOrdersPageP
   const searchKeyParam = firstParam(params.searchKey);
   const q = firstParam(params.q)?.trim() ?? "";
   const stageParam = firstParam(params.stage);
+  const attemptFilterParam = firstParam(params.attemptFilter);
+  const followUpFilterParam = firstParam(params.followUpFilter);
   const sortByParam = firstParam(params.sortBy);
   const sortDirParam = firstParam(params.sortDir);
 
@@ -42,6 +48,12 @@ export default async function AdminOrdersPage({ searchParams }: AdminOrdersPageP
   const stage = STAGE_FILTERS.includes(stageParam as OrdersStageFilter)
     ? (stageParam as OrdersStageFilter)
     : "ALL";
+  const attemptFilter = ATTEMPT_FILTERS.includes(attemptFilterParam as OrdersAttemptFilter)
+    ? (attemptFilterParam as OrdersAttemptFilter)
+    : "ALL";
+  const followUpFilter = FOLLOW_UP_FILTERS.includes(followUpFilterParam as OrdersFollowUpFilter)
+    ? (followUpFilterParam as OrdersFollowUpFilter)
+    : "ALL";
   const sortBy = SORT_BY.includes(sortByParam as OrdersSortBy)
     ? (sortByParam as OrdersSortBy)
     : "createdAt";
@@ -51,14 +63,14 @@ export default async function AdminOrdersPage({ searchParams }: AdminOrdersPageP
 
   const [formOptions, ordersPage] = await Promise.all([
     getFormOptions(),
-    getOrdersPage({ page, pageSize, searchKey, q, stage, sortBy, sortDir }),
+    getOrdersPage({ page, pageSize, searchKey, q, stage, attemptFilter, followUpFilter, sortBy, sortDir }),
   ]);
 
   return (
     <AdminOrdersTable
       title="All Orders"
       rows={ordersPage.rows}
-      filters={{ searchKey, q, stage, sortBy, sortDir }}
+      filters={{ searchKey, q, stage, attemptFilter, followUpFilter, sortBy, sortDir }}
       pagination={{
         page: ordersPage.page,
         pageSize: ordersPage.pageSize,
@@ -67,7 +79,12 @@ export default async function AdminOrdersPage({ searchParams }: AdminOrdersPageP
       }}
       counts={ordersPage.counts}
       callers={formOptions.callers}
-      actions={<AdminBulkUploadSheet callers={formOptions.callers} />}
+      actions={
+        <div>
+          <AdminBulkUploadSheet callers={formOptions.callers} />
+        </div>
+      }
+      showLastAttemptColumn
     />
   );
 }

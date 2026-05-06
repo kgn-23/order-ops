@@ -1,5 +1,5 @@
 import type { ReactNode } from "react";
-import { CircleHelpIcon, LayoutDashboardIcon, ListIcon, ScrollTextIcon } from "lucide-react";
+import { LayoutDashboardIcon, ListIcon, LogOutIcon, PhoneCallIcon, ScrollTextIcon } from "lucide-react";
 
 import { requireRole } from "@/app/lib/auth";
 import { RoleDashboardShell } from "@/components/roles/role-dashboard-shell";
@@ -14,10 +14,11 @@ export default async function ManagerLayout({ children }: { children: ReactNode 
       navMain={[
         { title: "Dashboard", url: "/manager/dashboard", icon: <LayoutDashboardIcon /> },
         { title: "Orders", url: "/manager/orders", icon: <ListIcon /> },
+        { title: "Call Logs", url: "/manager/call-logs", icon: <PhoneCallIcon /> },
         { title: "Activity", url: "/manager/activity", icon: <ScrollTextIcon /> },
       ]}
       navSecondary={[
-        { title: "Get help", url: "mailto:support@example.com", icon: <CircleHelpIcon /> },
+        { title: "Logout", url: "#", icon: <LogOutIcon />, isLogout: true },
       ]}
     >
       {children}

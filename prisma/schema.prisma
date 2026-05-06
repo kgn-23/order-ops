@@ -203,6 +203,7 @@ model CallLog {
   id            String          @id @default(cuid())
   orderId       String
   callerId      String
+  orderStage    OrderStage?
   outcome       CallOutcomeType
   notes         String?
   callDurationS Int?
@@ -215,6 +216,8 @@ model CallLog {
 
   @@index([orderId, calledAt])
   @@index([callerId, calledAt])
+  @@index([orderStage, calledAt])
+  @@index([deletedAt, calledAt])
 }
 
 model FollowUp {

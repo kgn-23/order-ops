@@ -64,7 +64,7 @@ export type OrderDetailPayload = {
 };
 
 export async function getOrderDetails(orderId: string): Promise<OrderDetailPayload> {
-  await requireRole(["ADMIN"]);
+  await requireRole(["ADMIN", "MANAGER", "CALLER"]);
 
   const row = await db.order.findFirst({
     where: { id: orderId, deletedAt: null },

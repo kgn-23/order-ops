@@ -262,11 +262,19 @@ export async function reassignOrder(input: unknown) {
 export async function logCall(input: unknown) {
   const session = await requireRole(["CALLER", "MANAGER", "ADMIN"]);
   const payload = logCallSchema.parse(input);
+  const order = await db.order.findFirst({
+    where: { id: payload.orderId, deletedAt: null },
+    select: { currentStage: true },
+  });
+  if (!order) {
+    throw new Error("Order not found.");
+  }
 
   const call = await db.callLog.create({
     data: {
       orderId: payload.orderId,
       callerId: session.userId,
+      orderStage: order.currentStage,
       outcome: payload.outcome,
       notes: payload.notes,
       callDurationS: payload.callDurationS,
@@ -283,6 +291,13 @@ export async function logCall(input: unknown) {
   });
 
   revalidatePath("/");
+  revalidatePath("/admin/orders");
+  revalidatePath("/manager/orders");
+  revalidatePath("/caller/orders");
+  revalidatePath("/admin/call-logs");
+  revalidatePath("/manager/call-logs");
+  revalidatePath("/caller/call-logs");
+  updateTag("orders-page");
 }
 
 export async function logCallFromForm(formData: FormData) {

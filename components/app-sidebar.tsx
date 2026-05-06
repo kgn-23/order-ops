@@ -20,6 +20,7 @@ export type CrmSidebarNavItem = {
   title: string;
   url: string;
   icon?: ReactNode;
+  isLogout?: boolean;
 };
 
 export type CrmSidebarDocItem = {
