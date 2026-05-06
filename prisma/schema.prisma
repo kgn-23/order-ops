@@ -1,0 +1,281 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Get a free hosted Postgres database in seconds: `npx create-db`
+
+generator client {
+  provider = "prisma-client"
+  output   = "../app/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum UserRoleType {
+  ADMIN
+  MANAGER
+  CALLER
+}
+
+enum OrderStage {
+  BOOKED
+  IN_TRANSIT
+  DELIVERED
+  RTO
+  OTHER
+}
+
+enum CallOutcomeType {
+  NO_ANSWER
+  CALLBACK_REQUESTED
+  CONFIRMED
+  DELAYED
+  CANCELLED
+  INVALID_NUMBER
+  OTHER
+}
+
+enum AssignmentType {
+  MANUAL
+  ROUND_ROBIN
+  RULE_BASED
+}
+
+model User {
+  id           String            @id @default(cuid())
+  name         String
+  email        String            @unique
+  passwordHash String
+  phone        String?
+  isActive     Boolean           @default(true)
+  callerTeamId String?
+  roles        UserRole[]
+  callLogs     CallLog[]
+  assignments  OrderAssignment[] @relation("AssigneeAssignments")
+  assignedBy   OrderAssignment[] @relation("AssignedByAssignments")
+  activityLogs ActivityLog[]
+  callerTeam   CallerTeam?       @relation("CallerTeamMembers", fields: [callerTeamId], references: [id], onDelete: SetNull)
+  ledTeam      CallerTeam?       @relation("CallerTeamLeader")
+  createdAt    DateTime          @default(now())
+  updatedAt    DateTime          @updatedAt
+  deletedAt    DateTime?
+  followUps    FollowUp[]
+
+  @@index([callerTeamId])
+}
+
+model CallerTeam {
+  id        String   @id @default(cuid())
+  name      String
+  leaderId  String   @unique
+  leader    User     @relation("CallerTeamLeader", fields: [leaderId], references: [id], onDelete: Restrict)
+  callers   User[]   @relation("CallerTeamMembers")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+  deletedAt DateTime?
+
+  @@index([name])
+}
+
+model Role {
+  id        String       @id @default(cuid())
+  code      UserRoleType @unique
+  label     String
+  users     UserRole[]
+  createdAt DateTime     @default(now())
+  updatedAt DateTime     @updatedAt
+  deletedAt DateTime?
+}
+
+model UserRole {
+  id        String    @id @default(cuid())
+  userId    String
+  roleId    String
+  user      User      @relation(fields: [userId], references: [id], onDelete: Restrict)
+  role      Role      @relation(fields: [roleId], references: [id], onDelete: Restrict)
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+  deletedAt DateTime?
+
+  @@unique([userId, roleId])
+  @@index([roleId])
+}
+
+model Customer {
+  id             String    @id @default(cuid())
+  fullName       String
+  primaryPhone   String
+  secondaryPhone String?
+  email          String?
+  normalizedKey  String    @unique
+  orders         Order[]
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+  deletedAt      DateTime?
+
+  @@index([primaryPhone])
+}
+
+model Order {
+  id               String                    @id @default(cuid())
+  externalOrderId  String?
+  sourceSystem     String                    @default("MANUAL")
+  sourceOrderId    String?
+  webhookEventId   String?
+  customerId       String
+  trackingNumber   String?
+  currentStage     OrderStage                @default(BOOKED)
+  customerName     String
+  customerPhone    String
+  addressLine1     String
+  addressLine2     String?
+  city             String
+  state            String
+  postalCode       String
+  country          String                    @default("IN")
+  bookingProvider  String?
+  bookingRef       String?
+  bookedAt         DateTime?
+  labelUrl         String?
+  labelGeneratedAt DateTime?
+  statusEvents     OrderStatusEvent[]
+  assignments      OrderAssignment[]
+  callLogs         CallLog[]
+  followUps        FollowUp[]
+  addressChecks    AddressValidationResult[]
+  activityLogs     ActivityLog[]
+  customer         Customer                  @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  createdAt        DateTime                  @default(now())
+  updatedAt        DateTime                  @updatedAt
+  deletedAt        DateTime?
+
+  @@index([customerId, createdAt])
+  @@index([currentStage, createdAt])
+  @@index([trackingNumber])
+  @@index([customerPhone])
+  @@index([deletedAt, createdAt])
+  @@index([deletedAt, currentStage, createdAt])
+  @@index([sourceSystem, sourceOrderId])
+}
+
+model OrderStatusEvent {
+  id             String     @id @default(cuid())
+  orderId        String
+  stage          OrderStage
+  provider       String
+  externalStatus String
+  notes          String?
+  rawPayload     Json?
+  idempotencyKey String?
+  eventAt        DateTime   @default(now())
+  order          Order      @relation(fields: [orderId], references: [id], onDelete: Restrict)
+  createdAt      DateTime   @default(now())
+  updatedAt      DateTime   @updatedAt
+  deletedAt      DateTime?
+
+  @@unique([provider, idempotencyKey])
+  @@index([orderId, eventAt])
+}
+
+model OrderAssignment {
+  id               String         @id @default(cuid())
+  orderId          String
+  assigneeId       String
+  assignedByUserId String
+  assignmentType   AssignmentType @default(MANUAL)
+  reason           String?
+  isActive         Boolean        @default(true)
+  assignedAt       DateTime       @default(now())
+  unassignedAt     DateTime?
+  order            Order          @relation(fields: [orderId], references: [id], onDelete: Restrict)
+  assignee         User           @relation("AssigneeAssignments", fields: [assigneeId], references: [id], onDelete: Restrict)
+  assignedBy       User           @relation("AssignedByAssignments", fields: [assignedByUserId], references: [id], onDelete: Restrict)
+  createdAt        DateTime       @default(now())
+  updatedAt        DateTime       @updatedAt
+  deletedAt        DateTime?
+
+  @@index([orderId, isActive])
+  @@index([assigneeId, isActive])
+}
+
+model CallLog {
+  id            String          @id @default(cuid())
+  orderId       String
+  callerId      String
+  outcome       CallOutcomeType
+  notes         String?
+  callDurationS Int?
+  calledAt      DateTime        @default(now())
+  order         Order           @relation(fields: [orderId], references: [id], onDelete: Restrict)
+  caller        User            @relation(fields: [callerId], references: [id], onDelete: Restrict)
+  createdAt     DateTime        @default(now())
+  updatedAt     DateTime        @updatedAt
+  deletedAt     DateTime?
+
+  @@index([orderId, calledAt])
+  @@index([callerId, calledAt])
+}
+
+model FollowUp {
+  id          String    @id @default(cuid())
+  orderId     String
+  createdById String
+  dueAt       DateTime?
+  notes       String
+  isClosed    Boolean   @default(false)
+  closedAt    DateTime?
+  order       Order     @relation(fields: [orderId], references: [id], onDelete: Restrict)
+  createdBy   User      @relation(fields: [createdById], references: [id], onDelete: Restrict)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  deletedAt   DateTime?
+
+  @@index([orderId, isClosed])
+}
+
+model AddressValidationResult {
+  id               String    @id @default(cuid())
+  orderId          String
+  validatedBy      String    @default("LLM")
+  originalAddress  String
+  suggestedAddress String?
+  confidence       Float?
+  remarks          String?
+  order            Order     @relation(fields: [orderId], references: [id], onDelete: Restrict)
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+  deletedAt        DateTime?
+}
+
+model ActivityLog {
+  id          String    @id @default(cuid())
+  actorUserId String?
+  orderId     String?
+  entityType  String
+  entityId    String
+  action      String
+  details     Json?
+  actor       User?     @relation(fields: [actorUserId], references: [id], onDelete: SetNull)
+  order       Order?    @relation(fields: [orderId], references: [id], onDelete: SetNull)
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  deletedAt   DateTime?
+
+  @@index([orderId, createdAt])
+  @@index([actorUserId, createdAt])
+}
+
+model WebhookInboxEvent {
+  id          String   @id @default(cuid())
+  endpoint    String
+  method      String
+  headers     Json?
+  payload     Json?
+  rawBody     String?
+  receivedAt  DateTime @default(now())
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@index([endpoint, receivedAt])
+}
