@@ -1,26 +1,18 @@
-import { getSession } from "@/app/lib/auth";
+import { getSession } from "@/lib/auth";
 import { CallLogsTable } from "@/components/call-logs/call-logs-table";
 import {
+  CALL_LOGS_OUTCOME_FILTERS,
   getCallerCallLogsPage,
   type CallLogsOutcomeFilter,
   type CallLogsSearchKey,
   type CallLogsSortBy,
   type CallLogsSortDir,
   type CallLogsStageFilter,
-} from "@/app/server/queries";
+} from "@/lib/call-logs/queries";
 
 const PAGE_SIZES = [50, 100, 200, 300] as const;
 const SEARCH_KEYS: CallLogsSearchKey[] = ["orderId", "customerName", "customerPhone", "callerName"];
-const OUTCOME_FILTERS: CallLogsOutcomeFilter[] = [
-  "ALL",
-  "NO_ANSWER",
-  "CALLBACK_REQUESTED",
-  "CONFIRMED",
-  "DELAYED",
-  "CANCELLED",
-  "INVALID_NUMBER",
-  "OTHER",
-];
+const OUTCOME_FILTERS = CALL_LOGS_OUTCOME_FILTERS;
 const STAGE_FILTERS: CallLogsStageFilter[] = ["ALL", "BOOKED", "IN_TRANSIT", "DELIVERED", "RTO", "OTHER"];
 const SORT_BY: CallLogsSortBy[] = ["calledAt", "callerName", "outcome"];
 const SORT_DIR: CallLogsSortDir[] = ["asc", "desc"];

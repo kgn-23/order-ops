@@ -1,4 +1,4 @@
-﻿import { db } from "@/app/lib/db";
+import { db } from "@/lib/db";
 import { Prisma } from "@/app/generated/prisma/client";
 
 type EndpointKind = "booking" | "non-booking";

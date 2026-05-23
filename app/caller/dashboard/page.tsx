@@ -3,8 +3,8 @@ import Link from "next/link";
 import { MetricsGrid } from "@/components/dashboard/metrics-grid";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
-import { getSession } from "@/app/lib/auth";
-import { getCallerDashboardSummary } from "@/app/server/queries";
+import { getSession } from "@/lib/auth";
+import { getCallerDashboardSummary } from "@/lib/dashboard/queries";
 
 function formatDue(iso: string | null) {
   if (!iso) return "—";
@@ -32,7 +32,7 @@ export default async function CallerDashboardPage() {
           { label: "Not Called", value: summary.notCalledOrders },
           { label: "Overdue Follow-ups", value: summary.overdueFollowUps },
           { label: "Follow-ups Due Today", value: summary.dueTodayFollowUps },
-          { label: "Calls Today", value: summary.callsToday },
+          { label: "Calls today (IST)", value: summary.callsToday },
         ]}
       />
 

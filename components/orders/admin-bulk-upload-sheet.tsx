@@ -1,12 +1,14 @@
 "use client";
 
 import type { ChangeEvent, FormEvent } from "react";
-import { useEffect, useMemo, useState, useTransition } from "react";
+import { useMemo, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import * as XLSX from "xlsx";
 import { toast } from "sonner";
 
-import { createOrdersAndAssignFromRowsForm } from "@/app/actions/phase1";
+import { createOrdersAndAssignFromRowsForm } from "@/lib/orders/actions/upload";
+import { enrichOrderRowFromMerchantNotes } from "@/lib/orders/parse-merchant-notes";
+import type { BulkUploadListContext } from "@/lib/orders/upload-source";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -56,15 +58,38 @@ type ParsedOrderRow = {
   customerPhone: string;
   addressLine1: string;
   addressLine2?: string;
+  addressLine3?: string;
   city: string;
   state: string;
   postalCode: string;
+  merchantOrderDisplayName?: string;
+  merchantOrderCreatedAt?: string;
+  financialStatus?: string;
+  fulfillmentStatus?: string;
+  currencyCode?: string;
+  subtotalAmount?: number;
+  shippingAmount?: number;
+  taxesAmount?: number;
+  totalAmount?: number;
+  discountAmount?: number;
+  paymentMethod?: string;
+  paymentReference?: string;
+  shippingMethodLabel?: string;
+  merchantOrderNotes?: string;
+  orderTags?: string;
+  primaryVendor?: string;
+  orderChannel?: string;
+  riskLevel?: string;
+  lineItemTitle?: string;
+  lineItemSku?: string;
+  lineItemQuantity?: number;
+  lineItemUnitPrice?: number;
 };
 
-const FIELD_MAP: Record<string, keyof ParsedOrderRow> = {
+const FIELD_MAP: Record<string, keyof ParsedOrderRow | "altPhone"> = {
   customername: "customerName",
   customer_name: "customerName",
-  phone: "customerPhone",
+  phone: "altPhone",
   mobile: "customerPhone",
   customerphone: "customerPhone",
   address1: "addressLine1",
@@ -84,22 +109,96 @@ const FIELD_MAP: Record<string, keyof ParsedOrderRow> = {
   receivermobileno: "customerPhone",
   receiveraddline1: "addressLine1",
   receiveraddline2: "addressLine2",
+  receiveraddline3: "addressLine3",
   receivercity: "city",
   "receiverstate/ut": "state",
   receiverpincode: "postalCode",
+  name: "merchantOrderDisplayName",
+  id: "externalOrderId",
+  financialstatus: "financialStatus",
+  fulfillmentstatus: "fulfillmentStatus",
+  currency: "currencyCode",
+  subtotal: "subtotalAmount",
+  shipping: "shippingAmount",
+  taxes: "taxesAmount",
+  total: "totalAmount",
+  discountamount: "discountAmount",
+  paymentmethod: "paymentMethod",
+  paymentreference: "paymentReference",
+  shippingmethod: "shippingMethodLabel",
+  notes: "merchantOrderNotes",
+  tags: "orderTags",
+  vendor: "primaryVendor",
+  source: "orderChannel",
+  risklevel: "riskLevel",
+  createdat: "merchantOrderCreatedAt",
+  shippingname: "customerName",
+  shippingphone: "customerPhone",
+  shippingaddress1: "addressLine1",
+  shippingaddress2: "addressLine2",
+  shippingcity: "city",
+  shippingprovince: "state",
+  shippingzip: "postalCode",
+  lineitemquantity: "lineItemQuantity",
+  lineitemname: "lineItemTitle",
+  lineitemprice: "lineItemUnitPrice",
+  lineitemsku: "lineItemSku",
 };
 
 function normalizeKey(key: string) {
   return key.replace(/\s+/g, "").toLowerCase();
 }
 
+function coerceMoney(value: unknown): number | undefined {
+  if (value === undefined || value === null || value === "") return undefined;
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  const s = String(value).trim().replace(/,/g, "");
+  if (!s) return undefined;
+  const n = Number(s);
+  return Number.isFinite(n) ? n : undefined;
+}
+
+function coerceInt(value: unknown): number | undefined {
+  if (value === undefined || value === null || value === "") return undefined;
+  if (typeof value === "number" && Number.isFinite(value)) return Math.trunc(value);
+  const n = Number(String(value).trim());
+  return Number.isFinite(n) ? Math.trunc(n) : undefined;
+}
+
 function normalizeRow(input: Record<string, unknown>) {
-  const normalized: Partial<ParsedOrderRow> = {};
+  const normalized: Partial<ParsedOrderRow> & { altPhone?: string } = {};
   for (const [key, value] of Object.entries(input)) {
     const mapped = FIELD_MAP[normalizeKey(key)];
     if (!mapped) continue;
-    normalized[mapped] = typeof value === "string" ? value.trim() : String(value ?? "");
+    if (
+      mapped === "subtotalAmount" ||
+      mapped === "shippingAmount" ||
+      mapped === "taxesAmount" ||
+      mapped === "totalAmount" ||
+      mapped === "discountAmount" ||
+      mapped === "lineItemUnitPrice"
+    ) {
+      const n = coerceMoney(value);
+      if (n !== undefined) normalized[mapped] = n as ParsedOrderRow[typeof mapped];
+      continue;
+    }
+    if (mapped === "lineItemQuantity") {
+      const n = coerceInt(value);
+      if (n !== undefined && n > 0) normalized.lineItemQuantity = n;
+      continue;
+    }
+    const str = typeof value === "string" ? value.trim() : String(value ?? "").trim();
+    if (mapped === "altPhone") {
+      normalized.altPhone = str;
+      continue;
+    }
+    (normalized as Record<string, unknown>)[mapped] = str;
   }
+  const alt = normalized.altPhone?.trim();
+  if (!normalized.customerPhone?.trim() && alt) {
+    normalized.customerPhone = alt;
+  }
+  delete normalized.altPhone;
   return normalized;
 }
 
@@ -112,9 +211,32 @@ function sanitizeRows(rows: Partial<ParsedOrderRow>[]) {
       customerPhone: row.customerPhone?.trim() || "",
       addressLine1: row.addressLine1?.trim() || "",
       addressLine2: row.addressLine2?.trim() || undefined,
+      addressLine3: row.addressLine3?.trim() || undefined,
       city: row.city?.trim() || "",
       state: row.state?.trim() || "",
       postalCode: row.postalCode?.trim() || "",
+      merchantOrderDisplayName: row.merchantOrderDisplayName?.trim() || undefined,
+      merchantOrderCreatedAt: row.merchantOrderCreatedAt?.trim() || undefined,
+      financialStatus: row.financialStatus?.trim() || undefined,
+      fulfillmentStatus: row.fulfillmentStatus?.trim() || undefined,
+      currencyCode: row.currencyCode?.trim() || undefined,
+      subtotalAmount: row.subtotalAmount,
+      shippingAmount: row.shippingAmount,
+      taxesAmount: row.taxesAmount,
+      totalAmount: row.totalAmount,
+      discountAmount: row.discountAmount,
+      paymentMethod: row.paymentMethod?.trim() || undefined,
+      paymentReference: row.paymentReference?.trim() || undefined,
+      shippingMethodLabel: row.shippingMethodLabel?.trim() || undefined,
+      merchantOrderNotes: row.merchantOrderNotes?.trim() || undefined,
+      orderTags: row.orderTags?.trim() || undefined,
+      primaryVendor: row.primaryVendor?.trim() || undefined,
+      orderChannel: row.orderChannel?.trim() || undefined,
+      riskLevel: row.riskLevel?.trim() || undefined,
+      lineItemTitle: row.lineItemTitle?.trim() || undefined,
+      lineItemSku: row.lineItemSku?.trim() || undefined,
+      lineItemQuantity: row.lineItemQuantity,
+      lineItemUnitPrice: row.lineItemUnitPrice,
     }))
     .filter(
       (row) =>
@@ -127,7 +249,13 @@ function sanitizeRows(rows: Partial<ParsedOrderRow>[]) {
     );
 }
 
-export function AdminBulkUploadSheet({ callers }: { callers: CallerOption[] }) {
+type AdminBulkUploadSheetProps = {
+  callers: CallerOption[];
+  /** Set from the page: tracking orders list vs storefront orders list. */
+  listContext: BulkUploadListContext;
+};
+
+export function AdminBulkUploadSheet({ callers, listContext }: AdminBulkUploadSheetProps) {
   const router = useRouter();
   const [open, setOpen] = useState(false);
   const [rows, setRows] = useState<ParsedOrderRow[]>([]);
@@ -135,15 +263,17 @@ export function AdminBulkUploadSheet({ callers }: { callers: CallerOption[] }) {
   const [selectedCallerId, setSelectedCallerId] = useState<string>(callers[0]?.id ?? "");
   const [pending, startTransition] = useTransition();
 
-  useEffect(() => {
-    if (callers.length === 0) {
-      setSelectedCallerId("");
-      return;
-    }
-    setSelectedCallerId((prev) => (callers.some((c) => c.id === prev) ? prev : callers[0].id));
-  }, [callers]);
+  const effectiveCallerId =
+    callers.length === 0
+      ? ""
+      : callers.some((c) => c.id === selectedCallerId)
+        ? selectedCallerId
+        : callers[0].id;
 
   const preview = useMemo(() => rows.slice(0, 5), [rows]);
+
+  const importLabel =
+    listContext === "storefront" ? "storefront orders" : "tracking / carrier orders";
 
   async function onFileChange(event: ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
@@ -163,7 +293,11 @@ export function AdminBulkUploadSheet({ callers }: { callers: CallerOption[] }) {
         workbook.Sheets[firstSheet],
         { defval: "" },
       );
-      const mappedRows = sanitizeRows(jsonRows.map(normalizeRow));
+      const mappedRows = sanitizeRows(
+        jsonRows.map((row) =>
+          enrichOrderRowFromMerchantNotes(normalizeRow(row) as Record<string, unknown>) as Partial<ParsedOrderRow>,
+        ),
+      );
       if (mappedRows.length === 0) {
         setRows([]);
         setError("No valid order rows found. Check column headers and required values.");
@@ -199,7 +333,7 @@ export function AdminBulkUploadSheet({ callers }: { callers: CallerOption[] }) {
   }
 
   return (
-    <>
+    <div className="flex shrink-0 flex-wrap items-center gap-2">
       <Button type="button" variant="outline" onClick={() => setOpen(true)}>
         Bulk upload & assign
       </Button>
@@ -209,8 +343,8 @@ export function AdminBulkUploadSheet({ callers }: { callers: CallerOption[] }) {
           <SheetHeader className="border-b p-4 text-left">
             <SheetTitle>Bulk upload & assign</SheetTitle>
             <SheetDescription>
-              Upload CSV/XLSX, pick an assignee, preview up to 5 rows, then create orders and
-              assign them.
+              Imports on this page are saved as {importLabel}. Pick an assignee, preview up to 5
+              rows, then create and assign.
             </SheetDescription>
           </SheetHeader>
 
@@ -234,10 +368,18 @@ export function AdminBulkUploadSheet({ callers }: { callers: CallerOption[] }) {
                 Choose CSV/XLSX file
               </label>
 
+              {rows.length > 0 ? (
+                <p className="text-xs text-muted-foreground">
+                  {rows.length} row{rows.length === 1 ? "" : "s"} → {importLabel}
+                </p>
+              ) : null}
+
+              <input type="hidden" name="uploadListContext" value={listContext} />
+
               <div className="space-y-2">
                 <Label htmlFor="bulk-assignee-sheet">Assign to</Label>
                 <Select
-                  value={selectedCallerId || undefined}
+                  value={effectiveCallerId || undefined}
                   onValueChange={setSelectedCallerId}
                   disabled={callers.length === 0}
                 >
@@ -256,7 +398,7 @@ export function AdminBulkUploadSheet({ callers }: { callers: CallerOption[] }) {
                     ))}
                   </SelectContent>
                 </Select>
-                <input type="hidden" name="assigneeId" value={selectedCallerId} />
+                <input type="hidden" name="assigneeId" value={effectiveCallerId} />
               </div>
 
               <input type="hidden" name="rowsJson" value={JSON.stringify(rows)} />
@@ -266,7 +408,7 @@ export function AdminBulkUploadSheet({ callers }: { callers: CallerOption[] }) {
                 value={rows.length > 0 ? `${rows.length} valid rows ready` : "No valid rows parsed yet"}
               />
 
-              <Button disabled={pending || rows.length === 0 || !selectedCallerId} type="submit">
+              <Button disabled={pending || rows.length === 0 || !effectiveCallerId} type="submit">
                 {pending ? "Working…" : "Upload and assign"}
               </Button>
             </form>
@@ -305,6 +447,6 @@ export function AdminBulkUploadSheet({ callers }: { callers: CallerOption[] }) {
           </div>
         </SheetContent>
       </Sheet>
-    </>
+    </div>
   );
 }

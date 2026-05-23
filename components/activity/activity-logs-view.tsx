@@ -4,8 +4,8 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useCallback, useState } from "react";
 
-import type { ActivityLogSort, ActivityUrlState } from "@/app/lib/activity-params";
-import { ACTIVITY_LOG_SORTS, activitySearchParamsString } from "@/app/lib/activity-params";
+import type { ActivityLogSort, ActivityUrlState } from "@/lib/activity-params";
+import { ACTIVITY_LOG_SORTS, activitySearchParamsString } from "@/lib/activity-params";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardAction, CardContent, CardHeader, CardTitle } from "@/components/ui/card";

@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import * as React from "react";
-import { logout } from "@/app/actions/auth";
+import { logout } from "@/lib/auth/actions";
 
 import {
   SidebarGroup,

@@ -1,7 +1,9 @@
-import { addFollowUpFromForm, logCallFromForm } from "@/app/actions/phase1";
+import { addFollowUpFromForm, logCallFromForm } from "@/lib/orders/actions/calls";
+import { CALL_OUTCOME_LABELS, CALL_OUTCOME_VALUES } from "@/lib/orders/call-outcomes";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 
 type OrderOption = {
   id: string;
@@ -25,21 +27,26 @@ export function CallerOpsForms({ orders }: { orders: OrderOption[] }) {
               ))}
             </select>
             <select required name="outcome" className="h-8 w-full rounded-lg border border-input bg-transparent px-2.5 py-1 text-sm">
-              {[
-                "NO_ANSWER",
-                "CALLBACK_REQUESTED",
-                "CONFIRMED",
-                "DELAYED",
-                "CANCELLED",
-                "INVALID_NUMBER",
-                "OTHER",
-              ].map((outcome) => (
+              {CALL_OUTCOME_VALUES.map((outcome) => (
                 <option key={outcome} value={outcome}>
-                  {outcome}
+                  {CALL_OUTCOME_LABELS[outcome]}
                 </option>
               ))}
             </select>
             <Input name="notes" placeholder="Notes" />
+            <div className="space-y-1.5">
+              <label htmlFor="caller-ops-refined-address" className="text-sm font-medium">
+                Refined address (optional)
+              </label>
+              <Textarea
+                id="caller-ops-refined-address"
+                name="refinedAddress"
+                placeholder="Corrected full address from the customer"
+                maxLength={8000}
+                rows={4}
+                className="min-h-[100px]"
+              />
+            </div>
             <Button type="submit">Add Call Log</Button>
           </form>
         </CardContent>

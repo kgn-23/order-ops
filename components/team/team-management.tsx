@@ -1,18 +1,20 @@
 ﻿"use client";
 
 import type { FormEvent } from "react";
-import { useEffect, useState, useTransition } from "react";
+import { useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
+import { EyeIcon, EyeOffIcon } from "lucide-react";
 import { toast } from "sonner";
 
-import { createCallerTeam, createTeamUser, updateTeamUser } from "@/app/actions/team";
-import type { CallerTeamRow, TeamUserRow } from "@/app/server/queries";
+import { createCallerTeam, createTeamUser, updateTeamUser } from "@/lib/team/actions";
+import type { CallerTeamRow, TeamUserRow } from "@/lib/team/queries";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import { Switch } from "@/components/ui/switch";
 import {
   Select,
   SelectContent,
@@ -44,6 +46,54 @@ type SheetMode =
 
 type ManagerOption = { id: string; name: string; email: string };
 
+function PasswordInputWithEye({
+  id,
+  value,
+  onChange,
+  placeholder,
+  autoComplete,
+  required,
+  minLength,
+  showPassword,
+  onToggleShow,
+}: {
+  id: string;
+  value: string;
+  onChange: (value: string) => void;
+  placeholder?: string;
+  autoComplete?: string;
+  required?: boolean;
+  minLength?: number;
+  showPassword: boolean;
+  onToggleShow: () => void;
+}) {
+  return (
+    <div className="relative">
+      <Input
+        id={id}
+        type={showPassword ? "text" : "password"}
+        autoComplete={autoComplete}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder={placeholder}
+        required={required}
+        minLength={minLength}
+        className="pr-10"
+      />
+      <Button
+        type="button"
+        variant="ghost"
+        size="icon"
+        className="absolute right-1 top-1 size-7"
+        aria-label={showPassword ? "Hide password" : "Show password"}
+        onClick={onToggleShow}
+      >
+        {showPassword ? <EyeOffIcon className="size-4" /> : <EyeIcon className="size-4" />}
+      </Button>
+    </div>
+  );
+}
+
 function primaryOperationalRole(roles: ("MANAGER" | "CALLER")[]) {
   if (roles.includes("MANAGER")) return "MANAGER" as const;
   return "CALLER" as const;
@@ -59,7 +109,6 @@ export function TeamManagement({
   managers: ManagerOption[];
 }) {
   const router = useRouter();
-  const [users, setUsers] = useState(initialUsers);
   const [sheet, setSheet] = useState<SheetMode>({ open: false });
   const [pending, startTransition] = useTransition();
 
@@ -72,20 +121,20 @@ export function TeamManagement({
 
   const [teamName, setTeamName] = useState("");
   const [leaderUserId, setLeaderUserId] = useState(managers[0]?.id ?? "");
+  const [initialPassword, setInitialPassword] = useState("");
+  const [showInitialPassword, setShowInitialPassword] = useState(false);
+  const [resetPasswordEnabled, setResetPasswordEnabled] = useState(false);
+  const [newPassword, setNewPassword] = useState("");
+  const [showNewPassword, setShowNewPassword] = useState(false);
 
-  useEffect(() => {
-    setUsers(initialUsers);
-  }, [initialUsers]);
+  const PASSWORD_MIN = 8;
 
-  useEffect(() => {
-    setCallerTeamId((prev) => (teams.some((t) => t.id === prev) ? prev : (teams[0]?.id ?? "")));
-  }, [teams]);
-
-  useEffect(() => {
-    setLeaderUserId((prev) =>
-      managers.some((m) => m.id === prev) ? prev : (managers[0]?.id ?? ""),
-    );
-  }, [managers]);
+  const callerTeamIdEffective = teams.some((t) => t.id === callerTeamId)
+    ? callerTeamId
+    : (teams[0]?.id ?? "");
+  const leaderUserIdEffective = managers.some((m) => m.id === leaderUserId)
+    ? leaderUserId
+    : (managers[0]?.id ?? "");
 
   function openCreate() {
     setName("");
@@ -94,6 +143,8 @@ export function TeamManagement({
     setRole("CALLER");
     setIsActive(true);
     setCallerTeamId(teams[0]?.id ?? "");
+    setInitialPassword("");
+    setShowInitialPassword(false);
     setSheet({ open: true, kind: "create" });
   }
 
@@ -104,6 +155,9 @@ export function TeamManagement({
     setRole(primaryOperationalRole(user.operationalRoles));
     setIsActive(user.isActive);
     setCallerTeamId(user.callerTeam?.id ?? teams[0]?.id ?? "");
+    setResetPasswordEnabled(false);
+    setNewPassword("");
+    setShowNewPassword(false);
     setSheet({ open: true, kind: "edit", user });
   }
 
@@ -113,19 +167,25 @@ export function TeamManagement({
 
   async function onSubmitCreate(event: FormEvent) {
     event.preventDefault();
+    const pw = initialPassword.trim();
+    if (pw.length < PASSWORD_MIN) {
+      toast.error(`Password must be at least ${PASSWORD_MIN} characters.`);
+      return;
+    }
     startTransition(async () => {
       const result = await createTeamUser({
         name,
         email,
         phone: phone.trim() || undefined,
         role,
-        callerTeamId: role === "CALLER" ? callerTeamId : undefined,
+        callerTeamId: role === "CALLER" ? callerTeamIdEffective : undefined,
+        initialPassword: pw,
       });
       if (!result.ok) {
         toast.error(result.error);
         return;
       }
-      toast.success("Team member added.");
+      toast.success("Team member added. Share the password with them securely so they can sign in.");
       closeSheet();
       router.refresh();
     });
@@ -135,6 +195,13 @@ export function TeamManagement({
     event.preventDefault();
     if (sheet.open !== true || sheet.kind !== "edit") return;
     const { user } = sheet;
+    const npw = newPassword.trim();
+    if (resetPasswordEnabled) {
+      if (npw.length < PASSWORD_MIN) {
+        toast.error(`New password must be at least ${PASSWORD_MIN} characters, or turn off reset password.`);
+        return;
+      }
+    }
     startTransition(async () => {
       const result = await updateTeamUser({
         userId: user.id,
@@ -143,7 +210,8 @@ export function TeamManagement({
         phone: phone.trim() || undefined,
         isActive,
         role,
-        callerTeamId: role === "CALLER" ? callerTeamId : undefined,
+        callerTeamId: role === "CALLER" ? callerTeamIdEffective : undefined,
+        ...(resetPasswordEnabled && npw.length >= PASSWORD_MIN ? { newPassword: npw } : {}),
       });
       if (!result.ok) {
         toast.error(result.error);
@@ -195,7 +263,7 @@ export function TeamManagement({
             </div>
             <div className="space-y-2">
               <Label>Leader (manager)</Label>
-              <Select value={leaderUserId || undefined} onValueChange={setLeaderUserId}>
+              <Select value={leaderUserIdEffective || undefined} onValueChange={setLeaderUserId}>
                 <SelectTrigger className="w-full">
                   <SelectValue placeholder="Select manager" />
                 </SelectTrigger>
@@ -211,7 +279,7 @@ export function TeamManagement({
             <div className="flex items-end">
               <Button
                 type="submit"
-                disabled={pending || !teamName.trim() || !leaderUserId}
+                disabled={pending || !teamName.trim() || !leaderUserIdEffective}
                 className="w-full md:w-auto"
               >
                 {pending ? "Creating..." : "Create team"}
@@ -277,14 +345,14 @@ export function TeamManagement({
               </TableRow>
             </TableHeader>
             <TableBody>
-              {users.length === 0 ? (
+              {initialUsers.length === 0 ? (
                 <TableRow>
                   <TableCell colSpan={7} className="text-center text-muted-foreground">
                     No managers or callers yet. Use &quot;Add team member&quot; to create one.
                   </TableCell>
                 </TableRow>
               ) : (
-                users.map((u) => (
+                initialUsers.map((u) => (
                   <TableRow key={u.id}>
                     <TableCell className="font-medium">{u.name}</TableCell>
                     <TableCell>{u.email}</TableCell>
@@ -318,16 +386,16 @@ export function TeamManagement({
       </Card>
 
       <Sheet open={sheet.open} onOpenChange={(open) => !open && closeSheet()}>
-        <SheetContent className="flex flex-col sm:max-w-md">
+        <SheetContent className="flex max-h-[100dvh] min-h-0 flex-col sm:max-w-md">
           {isCreate ? (
-            <form onSubmit={onSubmitCreate} className="flex flex-1 flex-col gap-4">
-              <SheetHeader>
+            <form onSubmit={onSubmitCreate} className="flex min-h-0 flex-1 flex-col gap-4 overflow-hidden">
+              <SheetHeader className="shrink-0">
                 <SheetTitle>Add team member</SheetTitle>
                 <SheetDescription>
-                  Create a manager/caller profile. Caller role requires a team assignment.
+                  Create a manager/caller profile. Set an initial password and share it with them securely (there is no email invite yet). Caller role requires a team assignment.
                 </SheetDescription>
               </SheetHeader>
-              <div className="flex flex-1 flex-col gap-4 overflow-y-auto px-4">
+              <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto px-4">
                 <div className="space-y-2">
                   <Label htmlFor="tm-name">Name</Label>
                   <Input id="tm-name" value={name} onChange={(e) => setName(e.target.value)} required />
@@ -340,6 +408,20 @@ export function TeamManagement({
                     value={email}
                     onChange={(e) => setEmail(e.target.value)}
                     required
+                  />
+                </div>
+                <div className="space-y-2">
+                  <Label htmlFor="tm-initial-password">Initial password</Label>
+                  <PasswordInputWithEye
+                    id="tm-initial-password"
+                    value={initialPassword}
+                    onChange={setInitialPassword}
+                    placeholder={`At least ${PASSWORD_MIN} characters`}
+                    autoComplete="new-password"
+                    required
+                    minLength={PASSWORD_MIN}
+                    showPassword={showInitialPassword}
+                    onToggleShow={() => setShowInitialPassword((v) => !v)}
                   />
                 </div>
                 <div className="space-y-2">
@@ -361,7 +443,7 @@ export function TeamManagement({
                 {role === "CALLER" ? (
                   <div className="space-y-2">
                     <Label>Caller team</Label>
-                    <Select value={callerTeamId || undefined} onValueChange={setCallerTeamId}>
+                    <Select value={callerTeamIdEffective || undefined} onValueChange={setCallerTeamId}>
                       <SelectTrigger className="w-full">
                         <SelectValue placeholder="Select team" />
                       </SelectTrigger>
@@ -376,11 +458,11 @@ export function TeamManagement({
                   </div>
                 ) : null}
               </div>
-              <SheetFooter className="flex-row justify-end gap-2 border-t pt-4">
+              <SheetFooter className="shrink-0 flex-row justify-end gap-2 border-t pt-4">
                 <Button type="button" variant="outline" onClick={closeSheet}>
                   Cancel
                 </Button>
-                <Button type="submit" disabled={pending || (role === "CALLER" && !callerTeamId)}>
+                <Button type="submit" disabled={pending || (role === "CALLER" && !callerTeamIdEffective)}>
                   {pending ? "Saving..." : "Create"}
                 </Button>
               </SheetFooter>
@@ -388,12 +470,48 @@ export function TeamManagement({
           ) : null}
 
           {isEdit ? (
-            <form onSubmit={onSubmitEdit} className="flex flex-1 flex-col gap-4">
-              <SheetHeader>
+            <form onSubmit={onSubmitEdit} className="flex min-h-0 flex-1 flex-col gap-4 overflow-hidden">
+              <SheetHeader className="shrink-0">
                 <SheetTitle>Edit team member</SheetTitle>
-                <SheetDescription>Update profile, role, team assignment, or active status.</SheetDescription>
+                <SheetDescription>
+                  Update profile, role, team assignment, or active status. Turn on reset password only when they need a new password.
+                </SheetDescription>
               </SheetHeader>
-              <div className="flex flex-1 flex-col gap-4 overflow-y-auto px-4">
+              <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto px-4">
+                <div className="rounded-lg border border-orange-500/35 bg-muted/40 p-4 dark:border-orange-400/25 dark:bg-muted/25">
+                  <div className="flex items-start justify-between gap-4">
+                    <div className="min-w-0 space-y-1">
+                      <p className="text-sm font-semibold leading-none">Reset password</p>
+                      <p className="text-sm text-muted-foreground">
+                        Enable to set a new password for this team member.
+                      </p>
+                    </div>
+                    <Switch
+                      checked={resetPasswordEnabled}
+                      onCheckedChange={(checked) => {
+                        setResetPasswordEnabled(checked);
+                        if (!checked) setNewPassword("");
+                      }}
+                      aria-label="Reset password"
+                    />
+                  </div>
+                  {resetPasswordEnabled ? (
+                    <div className="mt-4 space-y-2">
+                      <Label htmlFor="tm-new-password">New password</Label>
+                      <PasswordInputWithEye
+                        id="tm-new-password"
+                        value={newPassword}
+                        onChange={setNewPassword}
+                        placeholder={`At least ${PASSWORD_MIN} characters`}
+                        autoComplete="new-password"
+                        required
+                        minLength={PASSWORD_MIN}
+                        showPassword={showNewPassword}
+                        onToggleShow={() => setShowNewPassword((v) => !v)}
+                      />
+                    </div>
+                  ) : null}
+                </div>
                 <div className="space-y-2">
                   <Label htmlFor="tm-edit-name">Name</Label>
                   <Input
@@ -432,7 +550,7 @@ export function TeamManagement({
                 {role === "CALLER" ? (
                   <div className="space-y-2">
                     <Label>Caller team</Label>
-                    <Select value={callerTeamId || undefined} onValueChange={setCallerTeamId}>
+                    <Select value={callerTeamIdEffective || undefined} onValueChange={setCallerTeamId}>
                       <SelectTrigger className="w-full">
                         <SelectValue placeholder="Select team" />
                       </SelectTrigger>
@@ -457,11 +575,11 @@ export function TeamManagement({
                   </Label>
                 </div>
               </div>
-              <SheetFooter className="flex-row justify-end gap-2 border-t pt-4">
+              <SheetFooter className="shrink-0 flex-row justify-end gap-2 border-t pt-4">
                 <Button type="button" variant="outline" onClick={closeSheet}>
                   Cancel
                 </Button>
-                <Button type="submit" disabled={pending || (role === "CALLER" && !callerTeamId)}>
+                <Button type="submit" disabled={pending || (role === "CALLER" && !callerTeamIdEffective)}>
                   {pending ? "Saving..." : "Save changes"}
                 </Button>
               </SheetFooter>

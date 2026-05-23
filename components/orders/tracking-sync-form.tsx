@@ -1,10 +1,10 @@
 "use client";
 
-import { useActionState, useEffect, useState } from "react";
+import { useActionState, useState } from "react";
 import {
   type IndiaPostSyncFormState,
   syncTrackingFromIndiaPostFormAction,
-} from "@/app/actions/phase1";
+} from "@/lib/orders/actions/tracking";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -25,17 +25,16 @@ const initialState: IndiaPostSyncFormState = { status: "idle" };
 
 export function TrackingSyncForm({ orders }: { orders: OrderOption[] }) {
   const [orderId, setOrderId] = useState(orders[0]?.id ?? "");
+  const effectiveOrderId =
+    orders.length === 0
+      ? ""
+      : orders.some((o) => o.id === orderId)
+        ? orderId
+        : orders[0].id;
   const [state, formAction, isPending] = useActionState(
     syncTrackingFromIndiaPostFormAction,
     initialState,
   );
-
-  useEffect(() => {
-    if (orders.length === 0) return;
-    if (!orderId || !orders.some((o) => o.id === orderId)) {
-      setOrderId(orders[0].id);
-    }
-  }, [orders, orderId]);
 
   if (orders.length === 0) {
     return (
@@ -59,9 +58,9 @@ export function TrackingSyncForm({ orders }: { orders: OrderOption[] }) {
       </CardHeader>
       <CardContent>
         <form action={formAction} className="space-y-3">
-          <input type="hidden" name="orderId" value={orderId} />
+          <input type="hidden" name="orderId" value={effectiveOrderId} />
           <div className="space-y-2">
-            <Select value={orderId} onValueChange={setOrderId} disabled={isPending}>
+            <Select value={effectiveOrderId} onValueChange={setOrderId} disabled={isPending}>
               <SelectTrigger className="w-full">
                 <SelectValue placeholder="Select order" />
               </SelectTrigger>

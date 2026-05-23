@@ -3,7 +3,7 @@ import Link from "next/link";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import type { AppRole } from "@/app/lib/auth";
+import type { AppRole } from "@/lib/auth";
 
 type NavItem = {
   href: string;

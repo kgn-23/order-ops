@@ -2,7 +2,7 @@
 
 import type { CSSProperties, ReactNode } from "react";
 
-import type { AppSession } from "@/app/lib/auth";
+import type { AppSession } from "@/lib/auth";
 import { AppSidebar, type CrmSidebarDocItem, type CrmSidebarNavItem } from "@/components/app-sidebar";
 import { SiteHeader } from "@/components/site-header";
 import { SidebarInset, SidebarProvider } from "@/components/ui/sidebar";
@@ -47,7 +47,7 @@ export function RoleDashboardShell({
         />
         <SidebarInset>
           <SiteHeader roles={session.roles} />
-          <div className="flex flex-1 flex-col gap-4 p-4 md:gap-6 md:p-6">{children}</div>
+          <div className="flex min-w-0 flex-1 flex-col gap-4 p-4 md:gap-6 md:p-6">{children}</div>
         </SidebarInset>
       </SidebarProvider>
     </TooltipProvider>

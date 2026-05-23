@@ -1,7 +1,7 @@
 import type { ReactNode } from "react";
-import { LayoutDashboardIcon, ListIcon, LogOutIcon, PhoneCallIcon } from "lucide-react";
+import { LayoutDashboardIcon, ListIcon, LogOutIcon, PhoneCallIcon, ShoppingBagIcon } from "lucide-react";
 
-import { requireRole } from "@/app/lib/auth";
+import { requireRole } from "@/lib/auth";
 import { RoleDashboardShell } from "@/components/roles/role-dashboard-shell";
 
 export default async function CallerLayout({ children }: { children: ReactNode }) {
@@ -13,7 +13,8 @@ export default async function CallerLayout({ children }: { children: ReactNode }
       brand={{ title: "KGN Order Ops", href: "/caller/dashboard" }}
       navMain={[
         { title: "Dashboard", url: "/caller/dashboard", icon: <LayoutDashboardIcon /> },
-        { title: "Orders", url: "/caller/orders", icon: <ListIcon /> },
+        { title: "Tracking Orders", url: "/caller/orders", icon: <ListIcon /> },
+        { title: "Shopify Orders", url: "/caller/orders/commerce", icon: <ShoppingBagIcon /> },
         { title: "Call Logs", url: "/caller/call-logs", icon: <PhoneCallIcon /> },
       ]}
       navSecondary={[

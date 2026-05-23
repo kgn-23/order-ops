@@ -1,4 +1,4 @@
-import { validateAddressFromForm } from "@/app/actions/phase1";
+import { validateAddressFromForm } from "@/lib/orders/actions/address";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";

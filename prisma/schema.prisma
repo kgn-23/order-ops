@@ -18,20 +18,31 @@ enum UserRoleType {
   CALLER
 }
 
-enum OrderStage {
+
+enum OrderStatus {
+  PENDING
+  CONFIRMED
+  CANCELLED
+}
+
+enum OrderShipmentStage {
   BOOKED
+  RECEIVED
+  DISPATCHED
   IN_TRANSIT
+  OUT_FOR_DELIVERY
   DELIVERED
+  DELIVERY_ATTEMPTED
+  AVAILABLE_FOR_COLLECTION
   RTO
   OTHER
 }
 
 enum CallOutcomeType {
+  CALLED
   NO_ANSWER
-  CALLBACK_REQUESTED
-  CONFIRMED
-  DELAYED
-  CANCELLED
+  BUSY
+  FAILED
   INVALID_NUMBER
   OTHER
 }
@@ -40,6 +51,13 @@ enum AssignmentType {
   MANUAL
   ROUND_ROBIN
   RULE_BASED
+}
+
+enum CommerceStatusChangeSource {
+  UPLOAD
+  CALL_LOG
+  ADMIN
+  BACKFILL
 }
 
 model User {
@@ -61,6 +79,8 @@ model User {
   updatedAt    DateTime          @updatedAt
   deletedAt    DateTime?
   followUps    FollowUp[]
+  codExportBatches CodExportBatch[] @relation("CodExportBatches")
+  commerceStatusChanges OrderCommerceStatusEvent[] @relation("CommerceStatusChanges")
 
   @@index([callerTeamId])
 }
@@ -125,27 +145,56 @@ model Order {
   webhookEventId   String?
   customerId       String
   trackingNumber   String?
-  currentStage     OrderStage                @default(BOOKED)
+  currentStage     OrderShipmentStage                @default(BOOKED)
+  previousStage    OrderShipmentStage?
+  orderStatus      OrderStatus?             @default(PENDING)
   customerName     String
   customerPhone    String
   addressLine1     String
   addressLine2     String?
+  addressLine3     String?
   city             String
   state            String
   postalCode       String
   country          String                    @default("IN")
+  /// Full refined shipping address captured by caller during a call (optional).
+  refinedAddress   String?                   @db.Text
   bookingProvider  String?
   bookingRef       String?
   bookedAt         DateTime?
   labelUrl         String?
   labelGeneratedAt DateTime?
+  /// Optional commerce snapshot (nullable when unknown or not from a storefront export)
+  merchantOrderDisplayName String?
+  merchantOrderCreatedAt   DateTime?
+  financialStatus          String?
+  fulfillmentStatus        String?
+  currencyCode             String?           @db.VarChar(12)
+  subtotalAmount           Decimal?          @db.Decimal(14, 2)
+  shippingAmount           Decimal?          @db.Decimal(14, 2)
+  taxesAmount              Decimal?          @db.Decimal(14, 2)
+  totalAmount              Decimal?          @db.Decimal(14, 2)
+  discountAmount           Decimal?          @db.Decimal(14, 2)
+  paymentMethod            String?
+  paymentReference         String?
+  shippingMethodLabel      String?
+  merchantOrderNotes       String?           @db.Text
+  orderTags                String?
+  primaryVendor            String?
+  orderChannel             String?
+  riskLevel                String?
   statusEvents     OrderStatusEvent[]
+  commerceStatusEvents OrderCommerceStatusEvent[]
   assignments      OrderAssignment[]
   callLogs         CallLog[]
   followUps        FollowUp[]
   addressChecks    AddressValidationResult[]
   activityLogs     ActivityLog[]
+  lineItems        OrderLineItem[]
   customer         Customer                  @relation(fields: [customerId], references: [id], onDelete: Restrict)
+  codExportBatchId String?
+  codExportBatch   CodExportBatch?           @relation(fields: [codExportBatchId], references: [id], onDelete: SetNull)
+  exportedAt       DateTime?
   createdAt        DateTime                  @default(now())
   updatedAt        DateTime                  @updatedAt
   deletedAt        DateTime?
@@ -157,12 +206,50 @@ model Order {
   @@index([deletedAt, createdAt])
   @@index([deletedAt, currentStage, createdAt])
   @@index([sourceSystem, sourceOrderId])
+  @@index([deletedAt, sourceSystem, orderStatus, exportedAt])
+}
+
+model CodExportBatch {
+  id          String    @id @default(cuid())
+  createdById String
+  createdBy   User      @relation("CodExportBatches", fields: [createdById], references: [id], onDelete: Restrict)
+  format      String    @default("COD_FILE_4")
+  orderCount  Int
+  fileName    String
+  orders      Order[]
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
+  deletedAt   DateTime?
+
+  @@index([createdById, createdAt])
+  @@index([createdAt])
+}
+
+model OrderLineItem {
+  id                    String    @id @default(cuid())
+  orderId               String
+  quantity              Int?
+  title                 String?
+  sku                   String?
+  unitPrice             Decimal?  @db.Decimal(14, 2)
+  compareAtPrice        Decimal?  @db.Decimal(14, 2)
+  requiresShipping      Boolean?
+  taxable               Boolean?
+  lineFulfillmentStatus String?
+  vendor                String?
+  lineDiscountAmount    Decimal?  @db.Decimal(14, 2)
+  order                 Order     @relation(fields: [orderId], references: [id], onDelete: Restrict)
+  createdAt             DateTime  @default(now())
+  updatedAt             DateTime  @updatedAt
+  deletedAt             DateTime?
+
+  @@index([orderId, deletedAt])
 }
 
 model OrderStatusEvent {
   id             String     @id @default(cuid())
   orderId        String
-  stage          OrderStage
+  stage          OrderShipmentStage
   provider       String
   externalStatus String
   notes          String?
@@ -176,6 +263,27 @@ model OrderStatusEvent {
 
   @@unique([provider, idempotencyKey])
   @@index([orderId, eventAt])
+}
+
+model OrderCommerceStatusEvent {
+  id          String                     @id @default(cuid())
+  orderId     String
+  fromStatus  OrderStatus?
+  toStatus    OrderStatus
+  changedById String?
+  source      CommerceStatusChangeSource
+  callLogId   String?
+  notes       String?
+  order       Order                      @relation(fields: [orderId], references: [id], onDelete: Restrict)
+  changedBy   User?                      @relation("CommerceStatusChanges", fields: [changedById], references: [id], onDelete: SetNull)
+  callLog     CallLog?                   @relation(fields: [callLogId], references: [id], onDelete: SetNull)
+  createdAt   DateTime                   @default(now())
+  updatedAt   DateTime                   @updatedAt
+  deletedAt   DateTime?
+
+  @@index([orderId, createdAt])
+  @@index([changedById, createdAt])
+  @@index([toStatus, createdAt])
 }
 
 model OrderAssignment {
@@ -203,13 +311,15 @@ model CallLog {
   id            String          @id @default(cuid())
   orderId       String
   callerId      String
-  orderStage    OrderStage?
+  orderStage    OrderShipmentStage?
   outcome       CallOutcomeType
   notes         String?
   callDurationS Int?
+  recordingUrl  String?
   calledAt      DateTime        @default(now())
   order         Order           @relation(fields: [orderId], references: [id], onDelete: Restrict)
   caller        User            @relation(fields: [callerId], references: [id], onDelete: Restrict)
+  commerceStatusEvents OrderCommerceStatusEvent[]
   createdAt     DateTime        @default(now())
   updatedAt     DateTime        @updatedAt
   deletedAt     DateTime?

@@ -1,7 +1,7 @@
 import { redirect } from "next/navigation";
 
-import { getSessionOptional } from "@/app/lib/auth";
-import { getDefaultSection } from "@/app/lib/route-access";
+import { getSessionOptional } from "@/lib/auth";
+import { getDefaultSection } from "@/lib/route-access";
 import { SignInForm } from "@/components/auth/signin-form";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 

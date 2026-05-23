@@ -25,7 +25,7 @@ Follow this split:
 
 ## 1) Server Query Contract (Data Layer)
 
-Create a typed input and output in `app/server/queries.ts`.
+Create a typed input and output in `lib/<domain>/queries.ts` (e.g. `lib/orders/queries.ts`).
 
 Recommended input shape:
 
@@ -108,7 +108,7 @@ For reusable bulk operations:
 
 Server Action rules:
 
-- Validate payload with zod schema in `app/server/contracts.ts`.
+- Validate payload with zod schema in `lib/validators/contracts.ts`.
 - Role guard with `requireRole([...])`.
 - Use transaction for multi-row writes.
 - Write activity logs per row or per operation.
@@ -148,8 +148,8 @@ Before marking done:
 
 Use this file set each time:
 
-- `app/server/queries.ts` (new query + types)
-- `app/server/contracts.ts` (new schemas for bulk actions)
+- `lib/<domain>/queries.ts` (new query + types)
+- `lib/validators/contracts.ts` (new schemas for bulk actions)
 - `app/actions/<module>.ts` (bulk server actions)
 - `app/<role>/<module>/page.tsx` (server shell)
 - `components/<module>/<role>-<module>-table.tsx` (client table)

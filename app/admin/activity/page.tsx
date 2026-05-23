@@ -1,6 +1,6 @@
 import { ActivityLogsView } from "@/components/activity/activity-logs-view";
-import { parseActivitySearchParams } from "@/app/lib/activity-params";
-import { getActivityLogsPage } from "@/app/server/queries";
+import { parseActivitySearchParams } from "@/lib/activity-params";
+import { getActivityLogsPage } from "@/lib/activity/queries";
 
 type PageProps = {
   searchParams: Promise<Record<string, string | string[] | undefined>>;

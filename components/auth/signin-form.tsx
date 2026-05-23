@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { EyeIcon, EyeOffIcon } from "lucide-react";
 
-import { loginWithCredentials } from "@/app/actions/auth";
+import { loginWithCredentials } from "@/lib/auth/actions";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 
