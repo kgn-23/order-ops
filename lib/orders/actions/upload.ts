@@ -4,6 +4,7 @@ import { updateTag } from "next/cache";
 
 import { requireRole } from "@/lib/auth";
 import { db } from "@/lib/db";
+import { assertAssigneeAllowedForSession } from "@/lib/team/caller-assign";
 import { STOREFRONT_ORDER_SOURCE } from "@/lib/orders/source";
 import {
   parseBulkUploadListContext,
@@ -156,7 +157,7 @@ export async function createOrdersFromUploadFile(formData: FormData) {
 }
 
 export async function createOrdersAndAssignFromRowsForm(formData: FormData) {
-  const session = await requireRole(["ADMIN"]);
+  const session = await requireRole(["ADMIN", "MANAGER"]);
   const rowsJson = String(formData.get("rowsJson") ?? "[]");
   const assigneeId = String(formData.get("assigneeId") ?? "");
 
@@ -167,6 +168,8 @@ export async function createOrdersAndAssignFromRowsForm(formData: FormData) {
   if (!assigneeId) {
     throw new Error("Assignee is required.");
   }
+
+  await assertAssigneeAllowedForSession(session, assigneeId);
 
   const listContext = parseBulkUploadListContext(String(formData.get("uploadListContext") ?? ""));
   if (!listContext) {

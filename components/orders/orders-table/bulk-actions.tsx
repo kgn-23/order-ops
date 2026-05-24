@@ -1,5 +1,9 @@
 "use client";
 
+import {
+  ORDER_SHIPMENT_STAGE_VALUES,
+  shipmentStageSelectLabel,
+} from "@/lib/orders/shipment-stages";
 import { Button } from "@/components/ui/button";
 import {
   Select,
@@ -62,16 +66,20 @@ export function OrdersTableBulkActions({
         <div className="flex min-w-[200px] flex-col gap-2">
           <span className="text-xs text-muted-foreground">Set stage (manual)</span>
           <Select value={stageBulk || undefined} onValueChange={onStageBulkChange}>
-            <SelectTrigger className="w-full lg:w-[200px]" aria-label="Select stage for bulk update">
+            <SelectTrigger className="w-full lg:w-[220px]" aria-label="Select stage for bulk update">
               <SelectValue placeholder="Stage" />
             </SelectTrigger>
-            <SelectContent>
+            <SelectContent
+              position="popper"
+              align="start"
+              className="max-h-72 w-(--radix-select-trigger-width) min-w-[14rem]"
+            >
               <SelectGroup>
-                <SelectItem value="BOOKED">Booked</SelectItem>
-                <SelectItem value="IN_TRANSIT">In Transit</SelectItem>
-                <SelectItem value="DELIVERED">Delivered</SelectItem>
-                <SelectItem value="RTO">RTO</SelectItem>
-                <SelectItem value="OTHER">Other</SelectItem>
+                {ORDER_SHIPMENT_STAGE_VALUES.map((stage) => (
+                  <SelectItem key={stage} value={stage}>
+                    {shipmentStageSelectLabel(stage)}
+                  </SelectItem>
+                ))}
               </SelectGroup>
             </SelectContent>
           </Select>

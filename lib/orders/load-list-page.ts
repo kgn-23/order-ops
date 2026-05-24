@@ -1,5 +1,6 @@
 import { getSession } from "@/lib/auth";
 import { getFormOptions } from "@/lib/orders/form-options";
+import { getCallersForOrderAssign } from "@/lib/team/caller-assign";
 import {
   getCallerOrdersPage,
   getManagerOrdersPage,
@@ -47,11 +48,12 @@ export async function loadOrdersListPage(input: {
   }
 
   if (input.role === "manager") {
-    const [formOptions, ordersPage] = await Promise.all([
-      getFormOptions(),
+    const session = await getSession();
+    const [callers, ordersPage] = await Promise.all([
+      getCallersForOrderAssign({ role: "manager", managerUserId: session.userId }),
       getManagerOrdersPage(queryInput),
     ]);
-    return { variant, parsed, filters, ordersPage, callers: formOptions.callers };
+    return { variant, parsed, filters, ordersPage, callers };
   }
 
   const session = await getSession();

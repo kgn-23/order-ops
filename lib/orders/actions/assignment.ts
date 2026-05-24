@@ -4,12 +4,17 @@ import { updateTag } from "next/cache";
 
 import { requireRole } from "@/lib/auth";
 import { db } from "@/lib/db";
-import { assignOrdersSchema, bulkSetOrderStageSchema } from "@/lib/validators/contracts";
+import { applyManualOrderStage } from "@/lib/orders/apply-manual-stage";
+import { assertAssigneeAllowedForSession } from "@/lib/team/caller-assign";
+import { assignOrdersSchema, bulkSetOrderStageSchema, setOrderStageSchema } from "@/lib/validators/contracts";
 import { revalidateOrderListViews } from "@/lib/orders/actions/shared";
 
+const STAGE_EDITOR_ROLES = ["ADMIN", "MANAGER", "CALLER"] as const;
+
 export async function assignOrders(input: unknown) {
-  const session = await requireRole(["ADMIN"]);
+  const session = await requireRole(["ADMIN", "MANAGER"]);
   const payload = assignOrdersSchema.parse(input);
+  await assertAssigneeAllowedForSession(session, payload.assigneeId);
 
   await db.$transaction(async (tx) => {
     for (const orderId of payload.orderIds) {
@@ -46,25 +51,51 @@ export async function assignOrders(input: unknown) {
   updateTag("orders-page");
 }
 
-/** Manual stage override (admin). Does not pull carrier status — use sync flows for India Post truth. */
+/** Manual stage override (admin/manager/caller). Does not pull carrier status. */
 export async function bulkSetOrderStage(input: unknown) {
-  const session = await requireRole(["ADMIN"]);
+  const session = await requireRole([...STAGE_EDITOR_ROLES]);
   const payload = bulkSetOrderStageSchema.parse(input);
 
   await db.$transaction(async (tx) => {
     for (const orderId of payload.orderIds) {
-      await tx.order.updateMany({
-        where: { id: orderId, deletedAt: null },
-        data: { currentStage: payload.stage },
-      });
+      const result = await applyManualOrderStage(tx, { orderId, stage: payload.stage });
+      if (result.changed) {
+        await tx.activityLog.create({
+          data: {
+            actorUserId: session.userId,
+            orderId,
+            entityType: "Order",
+            entityId: orderId,
+            action: "ORDER_STAGE_SET_MANUAL",
+            details: { stage: payload.stage, previousStage: result.previousStage },
+          },
+        });
+      }
+    }
+  });
+
+  revalidateOrderListViews();
+  updateTag("orders-page");
+}
+
+export async function setOrderStage(input: unknown) {
+  const session = await requireRole([...STAGE_EDITOR_ROLES]);
+  const payload = setOrderStageSchema.parse(input);
+
+  await db.$transaction(async (tx) => {
+    const result = await applyManualOrderStage(tx, {
+      orderId: payload.orderId,
+      stage: payload.stage,
+    });
+    if (result.changed) {
       await tx.activityLog.create({
         data: {
           actorUserId: session.userId,
-          orderId,
+          orderId: payload.orderId,
           entityType: "Order",
-          entityId: orderId,
+          entityId: payload.orderId,
           action: "ORDER_STAGE_SET_MANUAL",
-          details: { stage: payload.stage },
+          details: { stage: payload.stage, previousStage: result.previousStage },
         },
       });
     }

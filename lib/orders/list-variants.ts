@@ -38,6 +38,11 @@ export const ORDERS_LIST_VARIANTS: Record<OrdersListKind, OrdersListVariant> = {
 
 export type OrdersListRole = "admin" | "manager" | "caller";
 
+/** Admin and manager share upload, export, and bulk order ops. */
+export function roleCanManageOrderUpload(role: OrdersListRole): boolean {
+  return role === "admin" || role === "manager";
+}
+
 export function ordersListBasePath(role: OrdersListRole, kind: OrdersListKind): string {
   const root = `/${role}/orders`;
   return kind === "storefront" ? `${root}/commerce` : root;

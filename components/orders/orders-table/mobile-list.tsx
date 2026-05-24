@@ -132,6 +132,7 @@ export function OrdersTableMobileList({
                   customerPhone={row.customerPhone}
                   isStorefront={showCommerceColumns}
                   orderStatus={row.orderStatus}
+                  currentStage={row.currentStage}
                 />
               ) : null}
               <div className="ml-auto shrink-0">

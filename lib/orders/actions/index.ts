@@ -9,6 +9,7 @@ export {
   assignOrdersFromForm,
   bulkSetOrderStage,
   reassignOrder,
+  setOrderStage,
 } from "@/lib/orders/actions/assignment";
 
 export { addFollowUp, addFollowUpFromForm, logCall, logCallFromForm } from "@/lib/orders/actions/calls";

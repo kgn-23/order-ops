@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, useTransition } from
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { toast } from "sonner";
 
+import type { OrderShipmentStageValue } from "@/lib/orders/shipment-stages";
 import { assignOrders, bulkSetOrderStage } from "@/lib/orders/actions/assignment";
 import {
   DEFAULT_ORDERS_OPTIONAL_COLUMNS,
@@ -265,7 +266,7 @@ export function useOrdersTable({
       try {
         await bulkSetOrderStage({
           orderIds: ids,
-          stage: stageBulk as "BOOKED" | "IN_TRANSIT" | "DELIVERED" | "RTO" | "OTHER",
+          stage: stageBulk as OrderShipmentStageValue,
         });
         toast.success(`Updated stage for ${ids.length} order(s).`);
         setSelected(new Set());

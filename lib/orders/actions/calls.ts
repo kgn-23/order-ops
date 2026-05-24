@@ -13,7 +13,7 @@ import { recordCommerceStatusChange } from "@/lib/orders/record-commerce-status"
 import { followUpSchema, logCallSchema } from "@/lib/validators/contracts";
 
 export async function logCall(input: unknown) {
-  const session = await requireRole(["CALLER", "ADMIN"]);
+  const session = await requireRole(["CALLER", "ADMIN", "MANAGER"]);
   const payload = logCallSchema.parse(input);
   const order = await db.order.findFirst({
     where: { id: payload.orderId, deletedAt: null },
@@ -142,7 +142,7 @@ export async function logCallFromForm(formData: FormData) {
 }
 
 export async function addFollowUp(input: unknown) {
-  const session = await requireRole(["CALLER", "ADMIN"]);
+  const session = await requireRole(["CALLER", "ADMIN", "MANAGER"]);
   const payload = followUpSchema.parse(input);
 
   const order = await db.order.findFirst({

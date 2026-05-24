@@ -39,9 +39,9 @@ async function ensureRoles() {
 }
 
 async function seedAdminUser() {
-  const adminEmail = (process.env.ADMIN_EMAIL ?? "admin@kgn.local").trim().toLowerCase();
+  const adminEmail = (process.env.ADMIN_EMAIL ?? "admin@kgn.com").trim().toLowerCase();
   const adminName = process.env.ADMIN_NAME ?? "KGN Admin";
-  const adminPhone = process.env.ADMIN_PHONE ?? "9999999999";
+  const adminPhone = process.env.ADMIN_PHONE ?? "9658020786";
   const adminPassword = process.env.ADMIN_PASSWORD ?? "admin123";
   const adminPasswordHash = await hashPassword(adminPassword);
 
@@ -162,7 +162,7 @@ async function seedTeamSamples() {
 async function main() {
   await ensureRoles();
   const adminEmail = await seedAdminUser();
-  await seedTeamSamples();
+  // await seedTeamSamples();
   console.log(`Admin user ready: ${adminEmail}`);
   console.log("Sample manager and caller upserted (manager@kgn.local, caller@kgn.local).");
   console.log("Passwords can be configured via ADMIN_PASSWORD / SEED_MANAGER_PASSWORD / SEED_CALLER_PASSWORD.");

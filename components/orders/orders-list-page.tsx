@@ -7,6 +7,7 @@ import { loadOrdersListPage } from "@/lib/orders/load-list-page";
 import {
   ordersListBasePath,
   ordersListTitle,
+  roleCanManageOrderUpload,
   type OrdersListKind,
   type OrdersListRole,
 } from "@/lib/orders/list-variants";
@@ -35,8 +36,10 @@ export async function OrdersListPage({ role, kind, searchParams }: OrdersListPag
   focusParams.set("mode", "focus");
   const enterFocusHref = `${basePath}?${focusParams.toString()}`;
 
+  const canManageUpload = roleCanManageOrderUpload(role);
+
   const bulkUpload =
-    role === "admin" && variant.bulkUploadListContext ? (
+    canManageUpload && variant.bulkUploadListContext ? (
       <AdminBulkUploadSheet
         key={`bulk-upload-${role}-${kind}`}
         callers={callers}
@@ -44,7 +47,7 @@ export async function OrdersListPage({ role, kind, searchParams }: OrdersListPag
       />
     ) : null;
 
-  const showCodExport = kind === "storefront" && (role === "admin" || role === "manager");
+  const showCodExport = kind === "storefront" && canManageUpload;
   const readyListParams = new URLSearchParams(navQuery);
   readyListParams.set("exportFilter", "READY");
   readyListParams.set("orderStatusFilter", "CONFIRMED");
@@ -97,8 +100,8 @@ export async function OrdersListPage({ role, kind, searchParams }: OrdersListPag
       showCommerceColumns={variant.showCommerceColumns}
       actions={toolbarActions ?? undefined}
       showLastAttemptColumn
-      enableCallerOrderActions={role === "caller"}
-      enableBulkActions={role === "admin"}
+      enableCallerOrderActions={kind === "tracking" || role === "caller"}
+      enableBulkActions={canManageUpload}
       extraQueryParams={parsed.focusMode ? { mode: "focus" } : undefined}
       filterSummaryKpis
     />

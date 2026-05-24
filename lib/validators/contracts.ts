@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 import { CALL_OUTCOME_VALUES } from "@/lib/orders/call-outcomes";
+import { orderShipmentStageZodEnum } from "@/lib/orders/shipment-stages";
 import { STOREFRONT_ORDER_STATUS_VALUES } from "@/lib/orders/storefront-order-status";
 
 function emptyToUndefined(v: unknown): unknown {
@@ -78,10 +79,15 @@ export const assignOrdersSchema = z.object({
   assignmentType: z.enum(["MANUAL", "ROUND_ROBIN", "RULE_BASED"]).default("MANUAL"),
 });
 
-/** Manual stage override by admin — not carrier-synced tracking. */
+/** Manual stage override — not carrier-synced tracking. */
 export const bulkSetOrderStageSchema = z.object({
   orderIds: z.array(z.string().min(1)).min(1),
-  stage: z.enum(["BOOKED", "IN_TRANSIT", "DELIVERED", "RTO", "OTHER"]),
+  stage: z.enum(orderShipmentStageZodEnum),
+});
+
+export const setOrderStageSchema = z.object({
+  orderId: z.string().min(1),
+  stage: z.enum(orderShipmentStageZodEnum),
 });
 
 const optionalTrimmedAddressLine = z.preprocess((v) => {

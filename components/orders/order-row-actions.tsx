@@ -5,6 +5,7 @@ import { NotebookPenIcon } from "lucide-react";
 import { toast } from "sonner";
 
 import { addFollowUp, logCall } from "@/lib/orders/actions/calls";
+import { setOrderStage } from "@/lib/orders/actions/assignment";
 import { getOrderDetails, type OrderDetailPayload } from "@/lib/orders/actions/order-details";
 import {
   ConfirmAddressFields,
@@ -29,12 +30,25 @@ import {
   STOREFRONT_CONFIRM_OUTCOME,
 } from "@/lib/orders/call-outcomes";
 import {
+  ORDER_SHIPMENT_STAGE_VALUES,
+  shipmentStageSelectLabel,
+  type OrderShipmentStageValue,
+} from "@/lib/orders/shipment-stages";
+import { ShipmentStageBadge } from "@/components/orders/status-badges";
+import {
   isStorefrontOrderConfirmed,
   parseStorefrontOrderStatus,
   STOREFRONT_ORDER_STATUS_LABELS,
   STOREFRONT_ORDER_STATUS_VALUES,
   type StorefrontOrderStatus,
 } from "@/lib/orders/storefront-order-status";
+
+function parseShipmentStage(raw: string | null | undefined): OrderShipmentStageValue {
+  if (raw && (ORDER_SHIPMENT_STAGE_VALUES as readonly string[]).includes(raw)) {
+    return raw as OrderShipmentStageValue;
+  }
+  return "BOOKED";
+}
 
 function emptyConfirmAddress(customerName: string, customerPhone: string): ConfirmAddressValues {
   return {
@@ -79,12 +93,14 @@ export function OrderRowActions({
   customerPhone,
   isStorefront = false,
   orderStatus: initialOrderStatus = null,
+  currentStage: initialCurrentStage = "BOOKED",
 }: {
   orderId: string;
   customerName: string;
   customerPhone: string;
   isStorefront?: boolean;
   orderStatus?: string | null;
+  currentStage?: string | null;
 }) {
   const [pending, startTransition] = useTransition();
   const [duePreset, setDuePreset] = useState("24h");
@@ -96,6 +112,9 @@ export function OrderRowActions({
   const [callOutcome, setCallOutcome] = useState<string>("OTHER");
   const [storefrontOrderStatus, setStorefrontOrderStatus] = useState<StorefrontOrderStatus>(
     () => parseStorefrontOrderStatus(initialOrderStatus),
+  );
+  const [shipmentStage, setShipmentStage] = useState<OrderShipmentStageValue>(() =>
+    parseShipmentStage(initialCurrentStage),
   );
   const [confirmAddress, setConfirmAddress] = useState<ConfirmAddressValues>(() =>
     emptyConfirmAddress(customerName, customerPhone),
@@ -117,6 +136,8 @@ export function OrderRowActions({
         if (isStorefront) {
           setConfirmAddress(confirmAddressFromDetails(payload));
           setStorefrontOrderStatus(parseStorefrontOrderStatus(payload.orderStatus));
+        } else {
+          setShipmentStage(parseShipmentStage(payload.currentStage));
         }
       } catch (error) {
         const message = error instanceof Error ? error.message : "Failed to load order details.";
@@ -128,7 +149,7 @@ export function OrderRowActions({
 
   const onDrawerOpenChange = (open: boolean) => {
     setDrawerOpen(open);
-    if (open && isStorefront) {
+    if (open) {
       loadDetails();
     }
     if (!open) {
@@ -137,6 +158,7 @@ export function OrderRowActions({
       setDetailsError(null);
       setCallOutcome("OTHER");
       setStorefrontOrderStatus(parseStorefrontOrderStatus(initialOrderStatus));
+      setShipmentStage(parseShipmentStage(initialCurrentStage));
       setConfirmAddress(emptyConfirmAddress(customerName, customerPhone));
     }
   };
@@ -146,6 +168,26 @@ export function OrderRowActions({
     if (value === "order-details" && !details) {
       loadDetails();
     }
+  };
+
+  const submitShipmentStage = () => {
+    startTransition(async () => {
+      try {
+        await setOrderStage({ orderId, stage: shipmentStage });
+        toast.success("Shipment stage updated.");
+        startDetailsTransition(async () => {
+          try {
+            const payload = await getOrderDetails(orderId);
+            setDetails(payload);
+            setShipmentStage(parseShipmentStage(payload.currentStage));
+          } catch {
+            /* ignore refresh errors */
+          }
+        });
+      } catch (error) {
+        toast.error(error instanceof Error ? error.message : "Failed to update stage.");
+      }
+    });
   };
 
   const submitCallLog = (formData: FormData) => {
@@ -294,6 +336,39 @@ export function OrderRowActions({
           </TabsList>
           <TabsContent value="actions" className="mt-4 min-h-0 flex-1 overflow-y-auto">
             <div className="space-y-6">
+              {!isStorefront ? (
+                <section className="space-y-3 rounded-md border border-dashed p-3">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <p className="text-sm font-medium">Shipment stage</p>
+                    <ShipmentStageBadge stage={shipmentStage} size="compact" />
+                  </div>
+                  <div className="space-y-2">
+                    <label htmlFor={`shipment-stage-${orderId}`} className="text-sm font-medium">
+                      Update stage
+                    </label>
+                    <select
+                      id={`shipment-stage-${orderId}`}
+                      value={shipmentStage}
+                      disabled={pending}
+                      onChange={(e) => setShipmentStage(parseShipmentStage(e.target.value))}
+                      className="h-9 w-full rounded-md border bg-background px-3 text-sm disabled:opacity-60"
+                    >
+                      {ORDER_SHIPMENT_STAGE_VALUES.map((stage) => (
+                        <option key={stage} value={stage}>
+                          {shipmentStageSelectLabel(stage)}
+                        </option>
+                      ))}
+                    </select>
+                    <p className="text-xs text-muted-foreground">
+                      Manual update — does not sync India Post tracking.
+                    </p>
+                  </div>
+                  <Button type="button" variant="secondary" disabled={pending} onClick={submitShipmentStage}>
+                    Save stage
+                  </Button>
+                </section>
+              ) : null}
+
               <section className="space-y-3">
                 <p className="text-sm font-medium">Add call log</p>
                 {isStorefront && isAlreadyConfirmed ? (

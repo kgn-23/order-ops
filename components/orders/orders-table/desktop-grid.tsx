@@ -235,6 +235,7 @@ export function OrdersTableDesktopGrid({
                       customerPhone={row.customerPhone}
                       isStorefront={showCommerceColumns}
                       orderStatus={row.orderStatus}
+                      currentStage={row.currentStage}
                     />
                   </div>
                 ) : null}
