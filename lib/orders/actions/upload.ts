@@ -1,6 +1,8 @@
 "use server";
 
 import { updateTag } from "next/cache";
+import type { Prisma } from "@/app/generated/prisma/client";
+import type { z } from "zod";
 
 import { requireRole } from "@/lib/auth";
 import { db } from "@/lib/db";
@@ -22,6 +24,121 @@ import {
 } from "@/lib/orders/actions/shared";
 import { recordCommerceStatusChange } from "@/lib/orders/record-commerce-status";
 
+/** Rows per interactive transaction — keeps each batch under serverless DB latency limits. */
+const UPLOAD_BATCH_SIZE = 50;
+const ASSIGN_BATCH_SIZE = 100;
+
+const TX_OPTIONS = {
+  maxWait: 10_000,
+  timeout: 30_000,
+} as const;
+
+type ParsedUploadRow = z.infer<typeof orderUploadRowSchema>;
+
+function chunk<T>(items: T[], size: number): T[][] {
+  const batches: T[][] = [];
+  for (let i = 0; i < items.length; i += size) {
+    batches.push(items.slice(i, i + size));
+  }
+  return batches;
+}
+
+async function insertUploadRow(
+  tx: Prisma.TransactionClient,
+  actorUserId: string,
+  row: ParsedUploadRow,
+  listContext: BulkUploadListContext | null,
+): Promise<{ orderId: string; sourceSystem: string }> {
+  const sourceSystem = resolveOrderSourceForUpload(row, listContext);
+  const customerPhone = normalizePhone(row.customerPhone);
+  const customer = await tx.customer.upsert({
+    where: { normalizedKey: customerPhone },
+    create: {
+      fullName: row.customerName,
+      primaryPhone: customerPhone,
+      normalizedKey: customerPhone,
+    },
+    update: { fullName: row.customerName, primaryPhone: customerPhone },
+  });
+
+  const displayRef = row.merchantOrderDisplayName ?? row.externalOrderId ?? undefined;
+
+  const order = await tx.order.create({
+    data: {
+      customerId: customer.id,
+      externalOrderId: row.externalOrderId,
+      sourceOrderId: row.externalOrderId ?? displayRef,
+      sourceSystem,
+      orderStatus: sourceSystem === STOREFRONT_ORDER_SOURCE ? "PENDING" : undefined,
+      customerName: row.customerName,
+      customerPhone,
+      addressLine1: row.addressLine1,
+      addressLine2: row.addressLine2,
+      addressLine3: row.addressLine3,
+      city: row.city,
+      state: row.state,
+      postalCode: row.postalCode,
+      trackingNumber: row.trackingNumber,
+      merchantOrderDisplayName: row.merchantOrderDisplayName,
+      merchantOrderCreatedAt: parseMerchantOrderCreatedAt(row.merchantOrderCreatedAt),
+      financialStatus: row.financialStatus,
+      fulfillmentStatus: row.fulfillmentStatus,
+      currencyCode: row.currencyCode,
+      subtotalAmount: row.subtotalAmount,
+      shippingAmount: row.shippingAmount,
+      taxesAmount: row.taxesAmount,
+      totalAmount: row.totalAmount,
+      discountAmount: row.discountAmount,
+      paymentMethod: row.paymentMethod,
+      paymentReference: row.paymentReference,
+      shippingMethodLabel: row.shippingMethodLabel,
+      merchantOrderNotes: row.merchantOrderNotes,
+      orderTags: row.orderTags,
+      primaryVendor: row.primaryVendor,
+      orderChannel: row.orderChannel,
+      riskLevel: row.riskLevel,
+    },
+  });
+
+  await tx.orderStatusEvent.create({
+    data: {
+      orderId: order.id,
+      stage: "BOOKED",
+      provider: "SYSTEM",
+      externalStatus: "BOOKED",
+    },
+  });
+
+  if (sourceSystem === STOREFRONT_ORDER_SOURCE) {
+    await recordCommerceStatusChange(tx, {
+      orderId: order.id,
+      fromStatus: null,
+      toStatus: "PENDING",
+      changedById: actorUserId,
+      source: "UPLOAD",
+    });
+  }
+
+  if (
+    row.lineItemTitle ||
+    row.lineItemSku ||
+    row.lineItemQuantity != null ||
+    row.lineItemUnitPrice != null
+  ) {
+    await tx.orderLineItem.create({
+      data: {
+        orderId: order.id,
+        title: row.lineItemTitle ?? null,
+        sku: row.lineItemSku ?? null,
+        quantity: row.lineItemQuantity ?? null,
+        unitPrice: row.lineItemUnitPrice ?? null,
+      },
+    });
+  }
+
+  return { orderId: order.id, sourceSystem };
+}
+
 export async function createOrdersFromUpload(
   rows: unknown[],
   options?: { listContext?: BulkUploadListContext | null },
@@ -32,117 +149,49 @@ export async function createOrdersFromUpload(
   );
   const listContext = options?.listContext ?? null;
 
-  const created = await db.$transaction(async (tx) => {
-    const orderIds: string[] = [];
-    const sourceByOrderId = new Map<string, string>();
-    for (const row of parsedRows) {
-      const sourceSystem = resolveOrderSourceForUpload(row, listContext);
-      const customerPhone = normalizePhone(row.customerPhone);
-      const customer = await tx.customer.upsert({
-        where: { normalizedKey: customerPhone },
-        create: {
-          fullName: row.customerName,
-          primaryPhone: customerPhone,
-          normalizedKey: customerPhone,
-        },
-        update: { fullName: row.customerName, primaryPhone: customerPhone },
-      });
+  const orderIds: string[] = [];
+  const sourceByOrderId = new Map<string, string>();
 
-      const displayRef = row.merchantOrderDisplayName ?? row.externalOrderId ?? undefined;
+  for (const batch of chunk(parsedRows, UPLOAD_BATCH_SIZE)) {
+    const batchResult = await db.$transaction(
+      async (tx) => {
+        const ids: string[] = [];
+        const sources = new Map<string, string>();
+        for (const row of batch) {
+          const { orderId, sourceSystem } = await insertUploadRow(
+            tx,
+            session.userId,
+            row,
+            listContext,
+          );
+          ids.push(orderId);
+          sources.set(orderId, sourceSystem);
+        }
+        return { ids, sources };
+      },
+      TX_OPTIONS,
+    );
 
-      const order = await tx.order.create({
-        data: {
-          customerId: customer.id,
-          externalOrderId: row.externalOrderId,
-          sourceOrderId: row.externalOrderId ?? displayRef,
-          sourceSystem,
-          orderStatus: sourceSystem === STOREFRONT_ORDER_SOURCE ? "PENDING" : undefined,
-          customerName: row.customerName,
-          customerPhone,
-          addressLine1: row.addressLine1,
-          addressLine2: row.addressLine2,
-          addressLine3: row.addressLine3,
-          city: row.city,
-          state: row.state,
-          postalCode: row.postalCode,
-          trackingNumber: row.trackingNumber,
-          merchantOrderDisplayName: row.merchantOrderDisplayName,
-          merchantOrderCreatedAt: parseMerchantOrderCreatedAt(row.merchantOrderCreatedAt),
-          financialStatus: row.financialStatus,
-          fulfillmentStatus: row.fulfillmentStatus,
-          currencyCode: row.currencyCode,
-          subtotalAmount: row.subtotalAmount,
-          shippingAmount: row.shippingAmount,
-          taxesAmount: row.taxesAmount,
-          totalAmount: row.totalAmount,
-          discountAmount: row.discountAmount,
-          paymentMethod: row.paymentMethod,
-          paymentReference: row.paymentReference,
-          shippingMethodLabel: row.shippingMethodLabel,
-          merchantOrderNotes: row.merchantOrderNotes,
-          orderTags: row.orderTags,
-          primaryVendor: row.primaryVendor,
-          orderChannel: row.orderChannel,
-          riskLevel: row.riskLevel,
-        },
-      });
-
-      await tx.orderStatusEvent.create({
-        data: {
-          orderId: order.id,
-          stage: "BOOKED",
-          provider: "SYSTEM",
-          externalStatus: "BOOKED",
-        },
-      });
-
-      if (sourceSystem === STOREFRONT_ORDER_SOURCE) {
-        await recordCommerceStatusChange(tx, {
-          orderId: order.id,
-          fromStatus: null,
-          toStatus: "PENDING",
-          changedById: session.userId,
-          source: "UPLOAD",
-        });
-      }
-
-      if (
-        row.lineItemTitle ||
-        row.lineItemSku ||
-        row.lineItemQuantity != null ||
-        row.lineItemUnitPrice != null
-      ) {
-        await tx.orderLineItem.create({
-          data: {
-            orderId: order.id,
-            title: row.lineItemTitle ?? null,
-            sku: row.lineItemSku ?? null,
-            quantity: row.lineItemQuantity ?? null,
-            unitPrice: row.lineItemUnitPrice ?? null,
-          },
-        });
-      }
-
-      orderIds.push(order.id);
-      sourceByOrderId.set(order.id, sourceSystem);
+    orderIds.push(...batchResult.ids);
+    for (const [id, source] of batchResult.sources) {
+      sourceByOrderId.set(id, source);
     }
-    return { orderIds, sourceByOrderId };
-  });
+  }
 
   await Promise.all(
-    created.orderIds.map((orderId) =>
+    orderIds.map((orderId) =>
       logActivity({
         actorUserId: session.userId,
         orderId,
         entityType: "Order",
         entityId: orderId,
         action: "ORDER_CREATED_FROM_UPLOAD",
-        details: { sourceSystem: created.sourceByOrderId.get(orderId) ?? "MANUAL" },
+        details: { sourceSystem: sourceByOrderId.get(orderId) ?? "MANUAL" },
       }),
     ),
   );
 
-  return { createdCount: created.orderIds.length, orderIds: created.orderIds };
+  return { createdCount: orderIds.length, orderIds };
 }
 
 export async function createOrdersFromUploadFile(formData: FormData) {
@@ -178,29 +227,34 @@ export async function createOrdersAndAssignFromRowsForm(formData: FormData) {
 
   const { orderIds } = await createOrdersFromUpload(parsedRows, { listContext });
 
-  await db.$transaction(async (tx) => {
-    for (const orderId of orderIds) {
-      await tx.orderAssignment.create({
-        data: {
-          orderId,
-          assigneeId,
-          assignedByUserId: session.userId,
-          assignmentType: "MANUAL",
-          reason: "Bulk sheet upload assignment",
-        },
-      });
-      await tx.activityLog.create({
-        data: {
-          actorUserId: session.userId,
-          orderId,
-          entityType: "OrderAssignment",
-          entityId: orderId,
-          action: "ORDER_ASSIGNED_FROM_UPLOAD",
-          details: { assigneeId },
-        },
-      });
-    }
-  });
+  for (const batch of chunk(orderIds, ASSIGN_BATCH_SIZE)) {
+    await db.$transaction(
+      async (tx) => {
+        for (const orderId of batch) {
+          await tx.orderAssignment.create({
+            data: {
+              orderId,
+              assigneeId,
+              assignedByUserId: session.userId,
+              assignmentType: "MANUAL",
+              reason: "Bulk sheet upload assignment",
+            },
+          });
+          await tx.activityLog.create({
+            data: {
+              actorUserId: session.userId,
+              orderId,
+              entityType: "OrderAssignment",
+              entityId: orderId,
+              action: "ORDER_ASSIGNED_FROM_UPLOAD",
+              details: { assigneeId },
+            },
+          });
+        }
+      },
+      TX_OPTIONS,
+    );
+  }
 
   revalidateOrderListViews();
   updateTag("orders-page");

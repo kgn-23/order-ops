@@ -18,49 +18,10 @@ Internal CRM for order operations: bulk upload, caller assignment, call logging,
 ## Setup
 
 ```bash
-pnpm install
-```
-
-Create a `.env` file in the project root:
-
-```env
-DATABASE_URL="postgresql://USER:PASSWORD@HOST:5432/DATABASE?sslmode=require"
-
-# Optional — India Post tracking API
-INDIA_POST_USERNAME=""
-INDIA_POST_PASSWORD=""
-INDIA_POST_BASE_URL="https://test.cept.gov.in/beextcustomer/v1"
-
-# Optional — rate limiting on admin order routes (Upstash Redis)
-UPSTASH_REDIS_REST_URL=""
-UPSTASH_REDIS_REST_TOKEN=""
-ADMIN_ORDERS_RATE_LIMIT_PER_MINUTE="120"
-
-# Optional — local dev without sign-in (JSON AppSession)
-MOCK_SESSION_JSON=""
-
-# Optional — seed overrides
-ADMIN_EMAIL="admin@kgn.com"
-ADMIN_PASSWORD="admin123"
-ADMIN_NAME="KGN Admin"
-ADMIN_PHONE="9658020786"
-SEED_MANAGER_EMAIL="manager@kgn.local"
-SEED_MANAGER_PASSWORD="manager123"
-SEED_CALLER_EMAIL="caller@kgn.local"
-SEED_CALLER_PASSWORD="caller123"
-SEED_CALLER_TEAM_NAME="Primary Caller Team"
-```
-
-Apply migrations and seed the database:
-
-```bash
-pnpm db:migrate
-pnpm db:seed
-```
-
-Start the dev server:
-
-```bash
+npm run dev
+# or
+yarn dev
+# or
 pnpm dev
 ```
 
