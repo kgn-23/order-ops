@@ -13,6 +13,12 @@ import {
   resolveOrderSourceForUpload,
   type BulkUploadListContext,
 } from "@/lib/orders/upload-source";
+import {
+  ASSIGN_BATCH_SIZE,
+  chunk,
+  UPLOAD_BATCH_SIZE,
+  UPLOAD_TX_OPTIONS,
+} from "@/lib/orders/upload-batch";
 import { enrichOrderRowFromMerchantNotes } from "@/lib/orders/parse-merchant-notes";
 import { parseOrderUpload } from "@/lib/orders/parse-upload";
 import { orderUploadRowSchema } from "@/lib/validators/contracts";
@@ -24,24 +30,7 @@ import {
 } from "@/lib/orders/actions/shared";
 import { recordCommerceStatusChange } from "@/lib/orders/record-commerce-status";
 
-/** Rows per interactive transaction — keeps each batch under serverless DB latency limits. */
-const UPLOAD_BATCH_SIZE = 50;
-const ASSIGN_BATCH_SIZE = 100;
-
-const TX_OPTIONS = {
-  maxWait: 10_000,
-  timeout: 30_000,
-} as const;
-
 type ParsedUploadRow = z.infer<typeof orderUploadRowSchema>;
-
-function chunk<T>(items: T[], size: number): T[][] {
-  const batches: T[][] = [];
-  for (let i = 0; i < items.length; i += size) {
-    batches.push(items.slice(i, i + size));
-  }
-  return batches;
-}
 
 async function insertUploadRow(
   tx: Prisma.TransactionClient,
@@ -139,49 +128,81 @@ async function insertUploadRow(
   return { orderId: order.id, sourceSystem };
 }
 
-export async function createOrdersFromUpload(
-  rows: unknown[],
-  options?: { listContext?: BulkUploadListContext | null },
-) {
-  const session = await requireRole(["ADMIN", "MANAGER"]);
-  const parsedRows = rows.map((row) =>
+function parseUploadRows(rows: unknown[]): ParsedUploadRow[] {
+  if (!Array.isArray(rows) || rows.length === 0) {
+    throw new Error("No valid rows found in upload.");
+  }
+  return rows.map((row) =>
     orderUploadRowSchema.parse(enrichOrderRowFromMerchantNotes(row as Record<string, unknown>)),
   );
-  const listContext = options?.listContext ?? null;
+}
 
-  const orderIds: string[] = [];
-  const sourceByOrderId = new Map<string, string>();
+async function createOrdersBatch(
+  parsedRows: ParsedUploadRow[],
+  listContext: BulkUploadListContext | null,
+  actorUserId: string,
+): Promise<{ orderIds: string[]; sourceByOrderId: Map<string, string> }> {
+  const batchResult = await db.$transaction(
+    async (tx) => {
+      const ids: string[] = [];
+      const sources = new Map<string, string>();
+      for (const row of parsedRows) {
+        const { orderId, sourceSystem } = await insertUploadRow(tx, actorUserId, row, listContext);
+        ids.push(orderId);
+        sources.set(orderId, sourceSystem);
+      }
+      return { ids, sources };
+    },
+    UPLOAD_TX_OPTIONS,
+  );
 
-  for (const batch of chunk(parsedRows, UPLOAD_BATCH_SIZE)) {
-    const batchResult = await db.$transaction(
+  return { orderIds: batchResult.ids, sourceByOrderId: batchResult.sources };
+}
+
+async function assignOrderIds(
+  orderIds: string[],
+  assigneeId: string,
+  actorUserId: string,
+): Promise<void> {
+  for (const batch of chunk(orderIds, ASSIGN_BATCH_SIZE)) {
+    await db.$transaction(
       async (tx) => {
-        const ids: string[] = [];
-        const sources = new Map<string, string>();
-        for (const row of batch) {
-          const { orderId, sourceSystem } = await insertUploadRow(
-            tx,
-            session.userId,
-            row,
-            listContext,
-          );
-          ids.push(orderId);
-          sources.set(orderId, sourceSystem);
+        for (const orderId of batch) {
+          await tx.orderAssignment.create({
+            data: {
+              orderId,
+              assigneeId,
+              assignedByUserId: actorUserId,
+              assignmentType: "MANUAL",
+              reason: "Bulk sheet upload assignment",
+            },
+          });
+          await tx.activityLog.create({
+            data: {
+              actorUserId,
+              orderId,
+              entityType: "OrderAssignment",
+              entityId: orderId,
+              action: "ORDER_ASSIGNED_FROM_UPLOAD",
+              details: { assigneeId },
+            },
+          });
         }
-        return { ids, sources };
       },
-      TX_OPTIONS,
+      UPLOAD_TX_OPTIONS,
     );
-
-    orderIds.push(...batchResult.ids);
-    for (const [id, source] of batchResult.sources) {
-      sourceByOrderId.set(id, source);
-    }
   }
+}
 
+async function logOrdersCreated(
+  orderIds: string[],
+  sourceByOrderId: Map<string, string>,
+  actorUserId: string,
+): Promise<void> {
   await Promise.all(
     orderIds.map((orderId) =>
       logActivity({
-        actorUserId: session.userId,
+        actorUserId,
         orderId,
         entityType: "Order",
         entityId: orderId,
@@ -190,6 +211,63 @@ export async function createOrdersFromUpload(
       }),
     ),
   );
+}
+
+/** Create + assign one upload batch (≤ UPLOAD_BATCH_SIZE rows). Used by the client for progress updates. */
+export async function processBulkUploadBatch(input: {
+  rows: unknown[];
+  assigneeId: string;
+  listContext: BulkUploadListContext;
+}): Promise<{ createdCount: number }> {
+  const session = await requireRole(["ADMIN", "MANAGER"]);
+  if (!input.assigneeId) {
+    throw new Error("Assignee is required.");
+  }
+  await assertAssigneeAllowedForSession(session, input.assigneeId);
+
+  const parsedRows = parseUploadRows(input.rows);
+  if (parsedRows.length > UPLOAD_BATCH_SIZE) {
+    throw new Error(`Each batch may contain at most ${UPLOAD_BATCH_SIZE} rows.`);
+  }
+
+  const { orderIds, sourceByOrderId } = await createOrdersBatch(
+    parsedRows,
+    input.listContext,
+    session.userId,
+  );
+  await assignOrderIds(orderIds, input.assigneeId, session.userId);
+  await logOrdersCreated(orderIds, sourceByOrderId, session.userId);
+
+  return { createdCount: orderIds.length };
+}
+
+/** Revalidate order lists after all client-side batches complete. */
+export async function finishBulkUpload(): Promise<void> {
+  await requireRole(["ADMIN", "MANAGER"]);
+  revalidateOrderListViews();
+  updateTag("orders-page");
+}
+
+export async function createOrdersFromUpload(
+  rows: unknown[],
+  options?: { listContext?: BulkUploadListContext | null },
+) {
+  const session = await requireRole(["ADMIN", "MANAGER"]);
+  const parsedRows = parseUploadRows(rows);
+  const listContext = options?.listContext ?? null;
+
+  const orderIds: string[] = [];
+  const sourceByOrderId = new Map<string, string>();
+
+  for (const batch of chunk(parsedRows, UPLOAD_BATCH_SIZE)) {
+    const result = await createOrdersBatch(batch, listContext, session.userId);
+    orderIds.push(...result.orderIds);
+    for (const [id, source] of result.sourceByOrderId) {
+      sourceByOrderId.set(id, source);
+    }
+  }
+
+  await logOrdersCreated(orderIds, sourceByOrderId, session.userId);
 
   return { createdCount: orderIds.length, orderIds };
 }
@@ -225,37 +303,13 @@ export async function createOrdersAndAssignFromRowsForm(formData: FormData) {
     throw new Error("Upload list context is required.");
   }
 
-  const { orderIds } = await createOrdersFromUpload(parsedRows, { listContext });
-
-  for (const batch of chunk(orderIds, ASSIGN_BATCH_SIZE)) {
-    await db.$transaction(
-      async (tx) => {
-        for (const orderId of batch) {
-          await tx.orderAssignment.create({
-            data: {
-              orderId,
-              assigneeId,
-              assignedByUserId: session.userId,
-              assignmentType: "MANUAL",
-              reason: "Bulk sheet upload assignment",
-            },
-          });
-          await tx.activityLog.create({
-            data: {
-              actorUserId: session.userId,
-              orderId,
-              entityType: "OrderAssignment",
-              entityId: orderId,
-              action: "ORDER_ASSIGNED_FROM_UPLOAD",
-              details: { assigneeId },
-            },
-          });
-        }
-      },
-      TX_OPTIONS,
-    );
+  for (const batch of chunk(parsedRows, UPLOAD_BATCH_SIZE)) {
+    await processBulkUploadBatch({
+      rows: batch,
+      assigneeId,
+      listContext,
+    });
   }
 
-  revalidateOrderListViews();
-  updateTag("orders-page");
+  await finishBulkUpload();
 }

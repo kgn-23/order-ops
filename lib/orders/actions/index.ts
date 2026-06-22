@@ -2,6 +2,8 @@ export {
   createOrdersAndAssignFromRowsForm,
   createOrdersFromUpload,
   createOrdersFromUploadFile,
+  finishBulkUpload,
+  processBulkUploadBatch,
 } from "@/lib/orders/actions/upload";
 
 export {

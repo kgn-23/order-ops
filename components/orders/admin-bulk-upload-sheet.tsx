@@ -1,12 +1,13 @@
 "use client";
 
 import type { ChangeEvent, FormEvent } from "react";
-import { useMemo, useState, useTransition } from "react";
+import { useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
 import * as XLSX from "xlsx";
 import { toast } from "sonner";
 
-import { createOrdersAndAssignFromRowsForm } from "@/lib/orders/actions/upload";
+import { finishBulkUpload, processBulkUploadBatch } from "@/lib/orders/actions/upload";
+import { chunk, UPLOAD_BATCH_SIZE } from "@/lib/orders/upload-batch";
 import { enrichOrderRowFromMerchantNotes } from "@/lib/orders/parse-merchant-notes";
 import type { BulkUploadListContext } from "@/lib/orders/upload-source";
 import { Badge } from "@/components/ui/badge";
@@ -261,7 +262,10 @@ export function AdminBulkUploadSheet({ callers, listContext }: AdminBulkUploadSh
   const [rows, setRows] = useState<ParsedOrderRow[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [selectedCallerId, setSelectedCallerId] = useState<string>(callers[0]?.id ?? "");
-  const [pending, startTransition] = useTransition();
+  const [isUploading, setIsUploading] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState<{ processed: number; total: number } | null>(
+    null,
+  );
 
   const effectiveCallerId =
     callers.length === 0
@@ -312,14 +316,34 @@ export function AdminBulkUploadSheet({ callers, listContext }: AdminBulkUploadSh
     }
   }
 
+  const uploadPercent =
+    uploadProgress && uploadProgress.total > 0
+      ? Math.min(100, Math.round((uploadProgress.processed / uploadProgress.total) * 100))
+      : 0;
+
   function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    const form = event.currentTarget;
-    startTransition(async () => {
+    if (!effectiveCallerId || rows.length === 0) return;
+
+    const batches = chunk(rows, UPLOAD_BATCH_SIZE);
+    setIsUploading(true);
+    setUploadProgress({ processed: 0, total: rows.length });
+    setError(null);
+
+    void (async () => {
       try {
-        const formData = new FormData(form);
-        await createOrdersAndAssignFromRowsForm(formData);
-        toast.success("Orders created and assigned.");
+        let processed = 0;
+        for (const batch of batches) {
+          await processBulkUploadBatch({
+            rows: batch,
+            assigneeId: effectiveCallerId,
+            listContext,
+          });
+          processed += batch.length;
+          setUploadProgress({ processed, total: rows.length });
+        }
+        await finishBulkUpload();
+        toast.success(`${rows.length} order${rows.length === 1 ? "" : "s"} created and assigned.`);
         setRows([]);
         setError(null);
         setOpen(false);
@@ -328,8 +352,16 @@ export function AdminBulkUploadSheet({ callers, listContext }: AdminBulkUploadSh
         const message = e instanceof Error ? e.message : "Upload failed.";
         setError(message);
         toast.error(message);
+      } finally {
+        setIsUploading(false);
+        setUploadProgress(null);
       }
-    });
+    })();
+  }
+
+  function handleOpenChange(next: boolean) {
+    if (isUploading && !next) return;
+    setOpen(next);
   }
 
   return (
@@ -338,7 +370,7 @@ export function AdminBulkUploadSheet({ callers, listContext }: AdminBulkUploadSh
         Bulk upload & assign
       </Button>
 
-      <Sheet open={open} onOpenChange={setOpen}>
+      <Sheet open={open} onOpenChange={handleOpenChange}>
         <SheetContent className="flex w-full flex-col gap-0 overflow-hidden p-0 sm:max-w-lg">
           <SheetHeader className="border-b p-4 text-left">
             <SheetTitle>Bulk upload & assign</SheetTitle>
@@ -360,10 +392,11 @@ export function AdminBulkUploadSheet({ callers, listContext }: AdminBulkUploadSh
                 type="file"
                 className="hidden"
                 id="bulk-upload-sheet-file"
+                disabled={isUploading}
               />
               <label
                 htmlFor="bulk-upload-sheet-file"
-                className="inline-flex w-fit cursor-pointer rounded-lg border px-3 py-2 text-sm"
+                className={`inline-flex w-fit rounded-lg border px-3 py-2 text-sm ${isUploading ? "pointer-events-none opacity-50" : "cursor-pointer"}`}
               >
                 Choose CSV/XLSX file
               </label>
@@ -376,12 +409,32 @@ export function AdminBulkUploadSheet({ callers, listContext }: AdminBulkUploadSh
 
               <input type="hidden" name="uploadListContext" value={listContext} />
 
+              {uploadProgress ? (
+                <div className="space-y-2 rounded-lg border bg-muted/40 p-3">
+                  <div className="flex items-center justify-between text-sm">
+                    <span className="font-medium">Uploading…</span>
+                    <span className="text-muted-foreground">
+                      {uploadProgress.processed} / {uploadProgress.total} ({uploadPercent}%)
+                    </span>
+                  </div>
+                  <div className="h-2 w-full overflow-hidden rounded-full bg-muted">
+                    <div
+                      className="h-full rounded-full bg-primary transition-[width] duration-300"
+                      style={{ width: `${uploadPercent}%` }}
+                    />
+                  </div>
+                  <p className="text-xs text-muted-foreground">
+                    Processing in batches of {UPLOAD_BATCH_SIZE} rows — keep this tab open.
+                  </p>
+                </div>
+              ) : null}
+
               <div className="space-y-2">
                 <Label htmlFor="bulk-assignee-sheet">Assign to</Label>
                 <Select
                   value={effectiveCallerId || undefined}
                   onValueChange={setSelectedCallerId}
-                  disabled={callers.length === 0}
+                  disabled={callers.length === 0 || isUploading}
                 >
                   <SelectTrigger id="bulk-assignee-sheet" className="w-full">
                     <SelectValue
@@ -401,15 +454,15 @@ export function AdminBulkUploadSheet({ callers, listContext }: AdminBulkUploadSh
                 <input type="hidden" name="assigneeId" value={effectiveCallerId} />
               </div>
 
-              <input type="hidden" name="rowsJson" value={JSON.stringify(rows)} />
-
               <Input
                 readOnly
                 value={rows.length > 0 ? `${rows.length} valid rows ready` : "No valid rows parsed yet"}
               />
 
-              <Button disabled={pending || rows.length === 0 || !effectiveCallerId} type="submit">
-                {pending ? "Working…" : "Upload and assign"}
+              <Button disabled={isUploading || rows.length === 0 || !effectiveCallerId} type="submit">
+                {isUploading
+                  ? `Uploading… ${uploadProgress ? `${uploadProgress.processed}/${uploadProgress.total}` : ""}`
+                  : "Upload and assign"}
               </Button>
             </form>
 
