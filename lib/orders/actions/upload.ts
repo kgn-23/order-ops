@@ -29,6 +29,11 @@ import {
   revalidateOrderListViews,
 } from "@/lib/orders/actions/shared";
 import { recordCommerceStatusChange } from "@/lib/orders/record-commerce-status";
+import {
+  analyzeUploadDuplicates,
+  type UploadDuplicateAnalysis,
+  type UploadDuplicateReason,
+} from "@/lib/orders/upload-duplicate-check";
 
 type ParsedUploadRow = z.infer<typeof orderUploadRowSchema>;
 
@@ -137,26 +142,69 @@ function parseUploadRows(rows: unknown[]): ParsedUploadRow[] {
   );
 }
 
+type UploadRowWithOverride = ParsedUploadRow & { duplicateOverride?: boolean };
+
+type CreatedUploadRow = {
+  orderId: string;
+  sourceSystem: string;
+  duplicateOverride?: boolean;
+  duplicateReasons?: UploadDuplicateReason[];
+};
+
 async function createOrdersBatch(
-  parsedRows: ParsedUploadRow[],
+  parsedRows: UploadRowWithOverride[],
   listContext: BulkUploadListContext | null,
   actorUserId: string,
-): Promise<{ orderIds: string[]; sourceByOrderId: Map<string, string> }> {
+): Promise<{ created: CreatedUploadRow[]; skippedCount: number }> {
+  const duplicateAnalysis = await analyzeUploadDuplicates(parsedRows);
+  const duplicateByIndex = new Map(
+    duplicateAnalysis.rows.map((row) => [row.rowIndex, row] as const),
+  );
+
+  const rowsToInsert: Array<{
+    row: ParsedUploadRow;
+    duplicateOverride?: boolean;
+    duplicateReasons?: UploadDuplicateReason[];
+  }> = [];
+  let skippedCount = 0;
+
+  parsedRows.forEach((row, rowIndex) => {
+    const duplicate = duplicateByIndex.get(rowIndex);
+    if (duplicate?.isDuplicate && !row.duplicateOverride) {
+      skippedCount += 1;
+      return;
+    }
+    const { duplicateOverride, ...orderRow } = row;
+    rowsToInsert.push({
+      row: orderRow,
+      duplicateOverride,
+      duplicateReasons: duplicate?.reasons,
+    });
+  });
+
   const batchResult = await db.$transaction(
     async (tx) => {
-      const ids: string[] = [];
-      const sources = new Map<string, string>();
-      for (const row of parsedRows) {
-        const { orderId, sourceSystem } = await insertUploadRow(tx, actorUserId, row, listContext);
-        ids.push(orderId);
-        sources.set(orderId, sourceSystem);
+      const created: CreatedUploadRow[] = [];
+      for (const item of rowsToInsert) {
+        const { orderId, sourceSystem } = await insertUploadRow(
+          tx,
+          actorUserId,
+          item.row,
+          listContext,
+        );
+        created.push({
+          orderId,
+          sourceSystem,
+          duplicateOverride: item.duplicateOverride,
+          duplicateReasons: item.duplicateReasons,
+        });
       }
-      return { ids, sources };
+      return created;
     },
     UPLOAD_TX_OPTIONS,
   );
 
-  return { orderIds: batchResult.ids, sourceByOrderId: batchResult.sources };
+  return { created: batchResult, skippedCount };
 }
 
 async function assignOrderIds(
@@ -195,22 +243,33 @@ async function assignOrderIds(
 }
 
 async function logOrdersCreated(
-  orderIds: string[],
-  sourceByOrderId: Map<string, string>,
+  created: CreatedUploadRow[],
   actorUserId: string,
 ): Promise<void> {
   await Promise.all(
-    orderIds.map((orderId) =>
+    created.map((item) =>
       logActivity({
         actorUserId,
-        orderId,
+        orderId: item.orderId,
         entityType: "Order",
-        entityId: orderId,
+        entityId: item.orderId,
         action: "ORDER_CREATED_FROM_UPLOAD",
-        details: { sourceSystem: sourceByOrderId.get(orderId) ?? "MANUAL" },
+        details: {
+          sourceSystem: item.sourceSystem,
+          ...(item.duplicateOverride
+            ? { duplicateOverride: true, reasons: item.duplicateReasons ?? [] }
+            : {}),
+        },
       }),
     ),
   );
+}
+
+/** Scan parsed upload rows for possible duplicates (30-day window + within-file). */
+export async function checkBulkUploadDuplicates(rows: unknown[]): Promise<UploadDuplicateAnalysis> {
+  await requireRole(["ADMIN", "MANAGER"]);
+  const parsedRows = parseUploadRows(rows);
+  return analyzeUploadDuplicates(parsedRows);
 }
 
 /** Create + assign one upload batch (≤ UPLOAD_BATCH_SIZE rows). Used by the client for progress updates. */
@@ -218,7 +277,7 @@ export async function processBulkUploadBatch(input: {
   rows: unknown[];
   assigneeId: string;
   listContext: BulkUploadListContext;
-}): Promise<{ createdCount: number }> {
+}): Promise<{ createdCount: number; skippedCount: number }> {
   const session = await requireRole(["ADMIN", "MANAGER"]);
   if (!input.assigneeId) {
     throw new Error("Assignee is required.");
@@ -230,15 +289,16 @@ export async function processBulkUploadBatch(input: {
     throw new Error(`Each batch may contain at most ${UPLOAD_BATCH_SIZE} rows.`);
   }
 
-  const { orderIds, sourceByOrderId } = await createOrdersBatch(
+  const { created, skippedCount } = await createOrdersBatch(
     parsedRows,
     input.listContext,
     session.userId,
   );
+  const orderIds = created.map((item) => item.orderId);
   await assignOrderIds(orderIds, input.assigneeId, session.userId);
-  await logOrdersCreated(orderIds, sourceByOrderId, session.userId);
+  await logOrdersCreated(created, session.userId);
 
-  return { createdCount: orderIds.length };
+  return { createdCount: orderIds.length, skippedCount };
 }
 
 /** Revalidate order lists after all client-side batches complete. */
@@ -256,20 +316,22 @@ export async function createOrdersFromUpload(
   const parsedRows = parseUploadRows(rows);
   const listContext = options?.listContext ?? null;
 
-  const orderIds: string[] = [];
-  const sourceByOrderId = new Map<string, string>();
+  const createdRows: CreatedUploadRow[] = [];
+  let skippedCount = 0;
 
   for (const batch of chunk(parsedRows, UPLOAD_BATCH_SIZE)) {
     const result = await createOrdersBatch(batch, listContext, session.userId);
-    orderIds.push(...result.orderIds);
-    for (const [id, source] of result.sourceByOrderId) {
-      sourceByOrderId.set(id, source);
-    }
+    createdRows.push(...result.created);
+    skippedCount += result.skippedCount;
   }
 
-  await logOrdersCreated(orderIds, sourceByOrderId, session.userId);
+  await logOrdersCreated(createdRows, session.userId);
 
-  return { createdCount: orderIds.length, orderIds };
+  return {
+    createdCount: createdRows.length,
+    skippedCount,
+    orderIds: createdRows.map((item) => item.orderId),
+  };
 }
 
 export async function createOrdersFromUploadFile(formData: FormData) {

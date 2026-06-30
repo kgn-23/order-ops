@@ -6,12 +6,22 @@ import { useRouter } from "next/navigation";
 import * as XLSX from "xlsx";
 import { toast } from "sonner";
 
-import { finishBulkUpload, processBulkUploadBatch } from "@/lib/orders/actions/upload";
+import {
+  checkBulkUploadDuplicates,
+  finishBulkUpload,
+  processBulkUploadBatch,
+} from "@/lib/orders/actions/upload";
 import { chunk, UPLOAD_BATCH_SIZE } from "@/lib/orders/upload-batch";
 import { enrichOrderRowFromMerchantNotes } from "@/lib/orders/parse-merchant-notes";
 import type { BulkUploadListContext } from "@/lib/orders/upload-source";
+import type {
+  UploadDuplicateMatch,
+  UploadDuplicateReason,
+  UploadRowDuplicateResult,
+} from "@/lib/orders/upload-duplicate-check";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
@@ -42,6 +52,15 @@ type CallerOption = {
   name: string;
   email: string;
   roles?: { role: { code: string } }[];
+};
+
+type ReviewFilter = "all" | "new" | "duplicates";
+
+type ReviewRow = {
+  index: number;
+  row: ParsedOrderRow;
+  duplicate: UploadRowDuplicateResult | null;
+  included: boolean;
 };
 
 function assigneeLabel(c: CallerOption) {
@@ -144,6 +163,13 @@ const FIELD_MAP: Record<string, keyof ParsedOrderRow | "altPhone"> = {
   lineitemname: "lineItemTitle",
   lineitemprice: "lineItemUnitPrice",
   lineitemsku: "lineItemSku",
+};
+
+const DUPLICATE_REASON_LABELS: Record<UploadDuplicateReason, string> = {
+  PHONE: "phone",
+  TRACKING: "tracking",
+  FILE_PHONE: "file phone",
+  FILE_TRACKING: "file tracking",
 };
 
 function normalizeKey(key: string) {
@@ -250,6 +276,37 @@ function sanitizeRows(rows: Partial<ParsedOrderRow>[]) {
     );
 }
 
+function buildReviewRows(
+  mappedRows: ParsedOrderRow[],
+  duplicateRows: UploadRowDuplicateResult[],
+): ReviewRow[] {
+  const duplicateByIndex = new Map(duplicateRows.map((row) => [row.rowIndex, row]));
+  return mappedRows.map((row, rowIndex) => {
+    const duplicate = duplicateByIndex.get(rowIndex) ?? null;
+    return {
+      index: rowIndex,
+      row,
+      duplicate,
+      included: !duplicate?.isDuplicate,
+    };
+  });
+}
+
+function formatDuplicateStatus(reasons: UploadDuplicateReason[]) {
+  if (reasons.length === 0) return "New";
+  const labels = reasons.map((reason) => DUPLICATE_REASON_LABELS[reason]);
+  return `Duplicate (${labels.join(" + ")})`;
+}
+
+function formatMatchSummary(match: UploadDuplicateMatch) {
+  const created = new Date(match.createdAt).toLocaleDateString("en-IN", {
+    day: "numeric",
+    month: "short",
+  });
+  const tracking = match.trackingNumber ? ` · ${match.trackingNumber}` : "";
+  return `${created} · ${match.currentStage}${tracking}`;
+}
+
 type AdminBulkUploadSheetProps = {
   callers: CallerOption[];
   /** Set from the page: tracking orders list vs storefront orders list. */
@@ -259,10 +316,13 @@ type AdminBulkUploadSheetProps = {
 export function AdminBulkUploadSheet({ callers, listContext }: AdminBulkUploadSheetProps) {
   const router = useRouter();
   const [open, setOpen] = useState(false);
-  const [rows, setRows] = useState<ParsedOrderRow[]>([]);
+  const [reviewRows, setReviewRows] = useState<ReviewRow[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [selectedCallerId, setSelectedCallerId] = useState<string>(callers[0]?.id ?? "");
   const [isUploading, setIsUploading] = useState(false);
+  const [isScanning, setIsScanning] = useState(false);
+  const [scanValid, setScanValid] = useState(false);
+  const [reviewFilter, setReviewFilter] = useState<ReviewFilter>("all");
   const [uploadProgress, setUploadProgress] = useState<{ processed: number; total: number } | null>(
     null,
   );
@@ -274,10 +334,63 @@ export function AdminBulkUploadSheet({ callers, listContext }: AdminBulkUploadSh
         ? selectedCallerId
         : callers[0].id;
 
-  const preview = useMemo(() => rows.slice(0, 5), [rows]);
-
   const importLabel =
     listContext === "storefront" ? "storefront orders" : "tracking / carrier orders";
+
+  const summary = useMemo(() => {
+    const total = reviewRows.length;
+    const duplicateCount = reviewRows.filter((item) => item.duplicate?.isDuplicate).length;
+    const selectedCount = reviewRows.filter((item) => item.included).length;
+    return {
+      total,
+      newCount: total - duplicateCount,
+      duplicateCount,
+      selectedCount,
+    };
+  }, [reviewRows]);
+
+  const filteredReviewRows = useMemo(() => {
+    if (reviewFilter === "new") {
+      return reviewRows.filter((item) => !item.duplicate?.isDuplicate);
+    }
+    if (reviewFilter === "duplicates") {
+      return reviewRows.filter((item) => item.duplicate?.isDuplicate);
+    }
+    return reviewRows;
+  }, [reviewFilter, reviewRows]);
+
+  async function scanParsedRows(mappedRows: ParsedOrderRow[]) {
+    setIsScanning(true);
+    setScanValid(false);
+    setError(null);
+    try {
+      const analysis = await checkBulkUploadDuplicates(mappedRows);
+      setReviewRows(buildReviewRows(mappedRows, analysis.rows));
+      setScanValid(true);
+    } catch (e) {
+      const message = e instanceof Error ? e.message : "Duplicate scan failed.";
+      setReviewRows(
+        mappedRows.map((row, index) => ({
+          index,
+          row,
+          duplicate: null,
+          included: false,
+        })),
+      );
+      setError(message);
+      setScanValid(false);
+    } finally {
+      setIsScanning(false);
+    }
+  }
+
+  function resetSheetState() {
+    setReviewRows([]);
+    setError(null);
+    setScanValid(false);
+    setReviewFilter("all");
+    setUploadProgress(null);
+  }
 
   async function onFileChange(event: ChangeEvent<HTMLInputElement>) {
     const file = event.target.files?.[0];
@@ -288,7 +401,7 @@ export function AdminBulkUploadSheet({ callers, listContext }: AdminBulkUploadSh
       const workbook = XLSX.read(bytes, { type: "array" });
       const firstSheet = workbook.SheetNames[0];
       if (!firstSheet) {
-        setRows([]);
+        resetSheetState();
         setError("No sheet found in the uploaded file.");
         return;
       }
@@ -303,17 +416,38 @@ export function AdminBulkUploadSheet({ callers, listContext }: AdminBulkUploadSh
         ),
       );
       if (mappedRows.length === 0) {
-        setRows([]);
+        resetSheetState();
         setError("No valid order rows found. Check column headers and required values.");
         return;
       }
 
-      setRows(mappedRows);
-      setError(null);
+      await scanParsedRows(mappedRows);
     } catch {
-      setRows([]);
+      resetSheetState();
       setError("Unable to parse file. Upload CSV/XLS/XLSX with valid headers.");
     }
+  }
+
+  function toggleRowIncluded(rowIndex: number, included: boolean) {
+    setReviewRows((current) =>
+      current.map((item, index) => (index === rowIndex ? { ...item, included } : item)),
+    );
+  }
+
+  function discardAllDuplicates() {
+    setReviewRows((current) =>
+      current.map((item) =>
+        item.duplicate?.isDuplicate ? { ...item, included: false } : item,
+      ),
+    );
+  }
+
+  function includeAllNew() {
+    setReviewRows((current) =>
+      current.map((item) =>
+        item.duplicate?.isDuplicate ? item : { ...item, included: true },
+      ),
+    );
   }
 
   const uploadPercent =
@@ -323,29 +457,43 @@ export function AdminBulkUploadSheet({ callers, listContext }: AdminBulkUploadSh
 
   function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    if (!effectiveCallerId || rows.length === 0) return;
+    const rowsToUpload = reviewRows
+      .filter((item) => item.included)
+      .map((item) => ({
+        ...item.row,
+        duplicateOverride: item.duplicate?.isDuplicate === true,
+      }));
 
-    const batches = chunk(rows, UPLOAD_BATCH_SIZE);
+    if (!effectiveCallerId || rowsToUpload.length === 0) return;
+
+    const batches = chunk(rowsToUpload, UPLOAD_BATCH_SIZE);
     setIsUploading(true);
-    setUploadProgress({ processed: 0, total: rows.length });
+    setUploadProgress({ processed: 0, total: rowsToUpload.length });
     setError(null);
 
     void (async () => {
       try {
         let processed = 0;
+        let createdTotal = 0;
+        let skippedTotal = 0;
         for (const batch of batches) {
-          await processBulkUploadBatch({
+          const result = await processBulkUploadBatch({
             rows: batch,
             assigneeId: effectiveCallerId,
             listContext,
           });
+          createdTotal += result.createdCount;
+          skippedTotal += result.skippedCount;
           processed += batch.length;
-          setUploadProgress({ processed, total: rows.length });
+          setUploadProgress({ processed, total: rowsToUpload.length });
         }
         await finishBulkUpload();
-        toast.success(`${rows.length} order${rows.length === 1 ? "" : "s"} created and assigned.`);
-        setRows([]);
-        setError(null);
+        const skippedSuffix =
+          skippedTotal > 0 ? ` (${skippedTotal} duplicate${skippedTotal === 1 ? "" : "s"} skipped)` : "";
+        toast.success(
+          `Created ${createdTotal} order${createdTotal === 1 ? "" : "s"} and assigned${skippedSuffix}.`,
+        );
+        resetSheetState();
         setOpen(false);
         router.refresh();
       } catch (e) {
@@ -361,8 +509,18 @@ export function AdminBulkUploadSheet({ callers, listContext }: AdminBulkUploadSh
 
   function handleOpenChange(next: boolean) {
     if (isUploading && !next) return;
+    if (!next) {
+      resetSheetState();
+    }
     setOpen(next);
   }
+
+  const canSubmit =
+    !isUploading &&
+    !isScanning &&
+    scanValid &&
+    summary.selectedCount > 0 &&
+    Boolean(effectiveCallerId);
 
   return (
     <div className="flex shrink-0 flex-wrap items-center gap-2">
@@ -371,39 +529,41 @@ export function AdminBulkUploadSheet({ callers, listContext }: AdminBulkUploadSh
       </Button>
 
       <Sheet open={open} onOpenChange={handleOpenChange}>
-        <SheetContent className="flex w-full flex-col gap-0 overflow-hidden p-0 sm:max-w-lg">
+        <SheetContent className="flex w-full flex-col gap-0 overflow-hidden p-0 sm:max-w-3xl">
           <SheetHeader className="border-b p-4 text-left">
             <SheetTitle>Bulk upload & assign</SheetTitle>
             <SheetDescription>
-              Imports on this page are saved as {importLabel}. Pick an assignee, preview up to 5
-              rows, then create and assign.
+              Imports on this page are saved as {importLabel}. Review duplicates from the last 30
+              days, approve rows to import, then create and assign.
             </SheetDescription>
           </SheetHeader>
 
           <div className="flex flex-1 flex-col gap-4 overflow-y-auto p-4">
             <form onSubmit={handleSubmit} className="flex flex-col gap-3 rounded-lg border p-3">
-              <Badge variant="outline" className="w-fit">
-                Preview limit: 5 rows
-              </Badge>
-
               <input
                 accept=".csv,.xls,.xlsx"
                 onChange={onFileChange}
                 type="file"
                 className="hidden"
                 id="bulk-upload-sheet-file"
-                disabled={isUploading}
+                disabled={isUploading || isScanning}
               />
               <label
                 htmlFor="bulk-upload-sheet-file"
-                className={`inline-flex w-fit rounded-lg border px-3 py-2 text-sm ${isUploading ? "pointer-events-none opacity-50" : "cursor-pointer"}`}
+                className={`inline-flex w-fit rounded-lg border px-3 py-2 text-sm ${isUploading || isScanning ? "pointer-events-none opacity-50" : "cursor-pointer"}`}
               >
                 Choose CSV/XLSX file
               </label>
 
-              {rows.length > 0 ? (
+              {isScanning ? (
+                <p className="text-xs text-muted-foreground">Scanning for duplicate orders…</p>
+              ) : null}
+
+              {reviewRows.length > 0 ? (
                 <p className="text-xs text-muted-foreground">
-                  {rows.length} row{rows.length === 1 ? "" : "s"} → {importLabel}
+                  {summary.newCount} new · {summary.duplicateCount} duplicate
+                  {summary.duplicateCount === 1 ? "" : "s"} · {summary.selectedCount} selected for
+                  upload
                 </p>
               ) : null}
 
@@ -434,7 +594,7 @@ export function AdminBulkUploadSheet({ callers, listContext }: AdminBulkUploadSh
                 <Select
                   value={effectiveCallerId || undefined}
                   onValueChange={setSelectedCallerId}
-                  disabled={callers.length === 0 || isUploading}
+                  disabled={callers.length === 0 || isUploading || isScanning}
                 >
                   <SelectTrigger id="bulk-assignee-sheet" className="w-full">
                     <SelectValue
@@ -456,45 +616,130 @@ export function AdminBulkUploadSheet({ callers, listContext }: AdminBulkUploadSh
 
               <Input
                 readOnly
-                value={rows.length > 0 ? `${rows.length} valid rows ready` : "No valid rows parsed yet"}
+                value={
+                  reviewRows.length > 0
+                    ? `${summary.selectedCount} of ${reviewRows.length} rows selected`
+                    : "No valid rows parsed yet"
+                }
               />
 
-              <Button disabled={isUploading || rows.length === 0 || !effectiveCallerId} type="submit">
+              <Button disabled={!canSubmit} type="submit">
                 {isUploading
                   ? `Uploading… ${uploadProgress ? `${uploadProgress.processed}/${uploadProgress.total}` : ""}`
-                  : "Upload and assign"}
+                  : `Upload ${summary.selectedCount} of ${reviewRows.length} rows`}
               </Button>
             </form>
 
             {error ? <p className="text-sm text-destructive">{error}</p> : null}
 
-            {preview.length > 0 ? (
+            {reviewRows.length > 0 && !scanValid ? (
+              <div className="flex items-center gap-2">
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  disabled={isScanning}
+                  onClick={() => void scanParsedRows(reviewRows.map((item) => item.row))}
+                >
+                  Rescan duplicates
+                </Button>
+              </div>
+            ) : null}
+
+            {reviewRows.length > 0 && scanValid ? (
               <div className="rounded-lg border p-3">
-                <p className="mb-3 text-sm font-medium">
-                  Preview (top {preview.length} of {rows.length})
-                </p>
-                <Table>
-                  <TableHeader>
-                    <TableRow>
-                      <TableHead>Tracking</TableHead>
-                      <TableHead>Customer</TableHead>
-                      <TableHead>Phone</TableHead>
-                      <TableHead>City</TableHead>
-                      <TableHead>Pincode</TableHead>
-                    </TableRow>
-                  </TableHeader>
-                  <TableBody>
-                    {preview.map((row, index) => (
-                      <TableRow key={`${row.trackingNumber ?? "row"}-${index}`}>
-                        <TableCell>{row.trackingNumber ?? "—"}</TableCell>
-                        <TableCell>{row.customerName}</TableCell>
-                        <TableCell>{row.customerPhone}</TableCell>
-                        <TableCell>{row.city}</TableCell>
-                        <TableCell>{row.postalCode}</TableCell>
+                <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
+                  <p className="text-sm font-medium">Review rows ({reviewRows.length})</p>
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Button type="button" variant="outline" size="sm" onClick={includeAllNew}>
+                      Include all new
+                    </Button>
+                    <Button type="button" variant="outline" size="sm" onClick={discardAllDuplicates}>
+                      Discard all duplicates
+                    </Button>
+                    <Select
+                      value={reviewFilter}
+                      onValueChange={(value) => setReviewFilter(value as ReviewFilter)}
+                    >
+                      <SelectTrigger className="h-8 w-[140px]">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="all">All rows</SelectItem>
+                        <SelectItem value="new">New only</SelectItem>
+                        <SelectItem value="duplicates">Duplicates only</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                </div>
+                <div className="max-h-[min(50vh,420px)] overflow-auto">
+                  <Table>
+                    <TableHeader>
+                      <TableRow>
+                        <TableHead className="w-12">Include</TableHead>
+                        <TableHead>Status</TableHead>
+                        <TableHead>Tracking</TableHead>
+                        <TableHead>Customer</TableHead>
+                        <TableHead>Phone</TableHead>
+                        <TableHead>City</TableHead>
+                        <TableHead>Pincode</TableHead>
+                        <TableHead>Existing match</TableHead>
                       </TableRow>
-                    ))}
-                  </TableBody>
-                </Table>
+                    </TableHeader>
+                    <TableBody>
+                      {filteredReviewRows.map((item) => {
+                        const reasons = item.duplicate?.reasons ?? [];
+                        const matches = item.duplicate?.matches ?? [];
+                        return (
+                          <TableRow key={`${item.index}-${item.row.trackingNumber ?? item.row.customerPhone}`}>
+                            <TableCell>
+                              <Checkbox
+                                checked={item.included}
+                                onCheckedChange={(checked) =>
+                                  toggleRowIncluded(item.index, checked === true)
+                                }
+                                disabled={isUploading || isScanning}
+                                aria-label={`Include row ${item.index + 1}`}
+                              />
+                            </TableCell>
+                            <TableCell>
+                              {item.duplicate?.isDuplicate ? (
+                                <Badge variant="secondary">
+                                  {formatDuplicateStatus(reasons)}
+                                </Badge>
+                              ) : (
+                                <Badge variant="outline">New</Badge>
+                              )}
+                            </TableCell>
+                            <TableCell>{item.row.trackingNumber ?? "—"}</TableCell>
+                            <TableCell>{item.row.customerName}</TableCell>
+                            <TableCell>{item.row.customerPhone}</TableCell>
+                            <TableCell>{item.row.city}</TableCell>
+                            <TableCell>{item.row.postalCode}</TableCell>
+                            <TableCell className="max-w-[220px] text-xs text-muted-foreground">
+                              {matches.length > 0 ? (
+                                <div className="space-y-1">
+                                  {matches.slice(0, 2).map((match) => (
+                                    <p key={match.orderId} className="truncate">
+                                      {formatMatchSummary(match)}
+                                    </p>
+                                  ))}
+                                  {matches.length > 2 ? (
+                                    <p>+{matches.length - 2} more</p>
+                                  ) : null}
+                                </div>
+                              ) : item.duplicate?.fileDuplicateOfRowIndex !== undefined ? (
+                                <p>Matches row {item.duplicate.fileDuplicateOfRowIndex + 1} in file</p>
+                              ) : (
+                                "—"
+                              )}
+                            </TableCell>
+                          </TableRow>
+                        );
+                      })}
+                    </TableBody>
+                  </Table>
+                </div>
               </div>
             ) : null}
           </div>

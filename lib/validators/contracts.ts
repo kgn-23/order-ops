@@ -70,6 +70,7 @@ export const orderUploadRowSchema = z.object({
   lineItemSku: optionalTrimmedString,
   lineItemQuantity: optionalLineQty,
   lineItemUnitPrice: optionalMoney,
+  duplicateOverride: z.boolean().optional(),
 });
 
 export const assignOrdersSchema = z.object({

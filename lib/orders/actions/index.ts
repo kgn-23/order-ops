@@ -1,4 +1,5 @@
 export {
+  checkBulkUploadDuplicates,
   createOrdersAndAssignFromRowsForm,
   createOrdersFromUpload,
   createOrdersFromUploadFile,
