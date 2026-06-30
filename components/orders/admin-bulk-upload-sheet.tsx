@@ -22,6 +22,16 @@ import type {
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
@@ -55,6 +65,8 @@ type CallerOption = {
 };
 
 type ReviewFilter = "all" | "new" | "duplicates";
+
+type DiscardConfirmAction = "close" | "startOver";
 
 type ReviewRow = {
   index: number;
@@ -295,7 +307,7 @@ function buildReviewRows(
 function formatDuplicateStatus(reasons: UploadDuplicateReason[]) {
   if (reasons.length === 0) return "New";
   const labels = reasons.map((reason) => DUPLICATE_REASON_LABELS[reason]);
-  return `Duplicate (${labels.join(" + ")})`;
+  return labels.join(", ");
 }
 
 function formatMatchSummary(match: UploadDuplicateMatch) {
@@ -324,6 +336,9 @@ export function AdminBulkUploadSheet({ callers, listContext }: AdminBulkUploadSh
   const [scanValid, setScanValid] = useState(false);
   const [reviewFilter, setReviewFilter] = useState<ReviewFilter>("all");
   const [uploadProgress, setUploadProgress] = useState<{ processed: number; total: number } | null>(
+    null,
+  );
+  const [discardConfirmAction, setDiscardConfirmAction] = useState<DiscardConfirmAction | null>(
     null,
   );
 
@@ -507,13 +522,44 @@ export function AdminBulkUploadSheet({ callers, listContext }: AdminBulkUploadSh
     })();
   }
 
+  function requestCloseSheet() {
+    if (isUploading || isScanning) return;
+    if (reviewRows.length > 0) {
+      setDiscardConfirmAction("close");
+      return;
+    }
+    resetSheetState();
+    setOpen(false);
+  }
+
   function handleOpenChange(next: boolean) {
-    if (isUploading && !next) return;
-    if (!next) {
+    if (next) {
+      setOpen(true);
+      return;
+    }
+    requestCloseSheet();
+  }
+
+  function handleStartOver() {
+    if (isUploading || isScanning) return;
+    if (reviewRows.length > 0) {
+      setDiscardConfirmAction("startOver");
+      return;
+    }
+    resetSheetState();
+  }
+
+  function handleConfirmDiscard() {
+    if (discardConfirmAction === "close") {
+      resetSheetState();
+      setOpen(false);
+    } else if (discardConfirmAction === "startOver") {
       resetSheetState();
     }
-    setOpen(next);
+    setDiscardConfirmAction(null);
   }
+
+  const hasWorkInProgress = reviewRows.length > 0 || isScanning;
 
   const canSubmit =
     !isUploading &&
@@ -528,8 +574,46 @@ export function AdminBulkUploadSheet({ callers, listContext }: AdminBulkUploadSh
         Bulk upload & assign
       </Button>
 
+      <AlertDialog
+        open={discardConfirmAction !== null}
+        onOpenChange={(next) => {
+          if (!next) setDiscardConfirmAction(null);
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>
+              {discardConfirmAction === "startOver" ? "Start over?" : "Discard upload review?"}
+            </AlertDialogTitle>
+            <AlertDialogDescription>
+              {discardConfirmAction === "startOver"
+                ? "Clear this upload and choose a new file? Current review progress will be lost."
+                : "Parsed rows, duplicate flags, and selections will be lost."}
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Keep reviewing</AlertDialogCancel>
+            <AlertDialogAction variant="destructive" onClick={handleConfirmDiscard}>
+              {discardConfirmAction === "startOver" ? "Start over" : "Discard"}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
       <Sheet open={open} onOpenChange={handleOpenChange}>
-        <SheetContent className="flex w-full flex-col gap-0 overflow-hidden p-0 sm:max-w-3xl">
+        <SheetContent
+          className="flex w-full max-w-none flex-col gap-0 overflow-hidden p-0 data-[side=right]:sm:max-w-[min(96vw,1400px)]"
+          onInteractOutside={(event) => {
+            if (hasWorkInProgress || isUploading) {
+              event.preventDefault();
+            }
+          }}
+          onEscapeKeyDown={(event) => {
+            if (isUploading || isScanning) {
+              event.preventDefault();
+            }
+          }}
+        >
           <SheetHeader className="border-b p-4 text-left">
             <SheetTitle>Bulk upload & assign</SheetTitle>
             <SheetDescription>
@@ -628,6 +712,19 @@ export function AdminBulkUploadSheet({ callers, listContext }: AdminBulkUploadSh
                   ? `Uploading… ${uploadProgress ? `${uploadProgress.processed}/${uploadProgress.total}` : ""}`
                   : `Upload ${summary.selectedCount} of ${reviewRows.length} rows`}
               </Button>
+
+              {reviewRows.length > 0 ? (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="sm"
+                  className="w-fit text-muted-foreground"
+                  disabled={isUploading || isScanning}
+                  onClick={handleStartOver}
+                >
+                  Start over
+                </Button>
+              ) : null}
             </form>
 
             {error ? <p className="text-sm text-destructive">{error}</p> : null}
@@ -672,18 +769,18 @@ export function AdminBulkUploadSheet({ callers, listContext }: AdminBulkUploadSh
                     </Select>
                   </div>
                 </div>
-                <div className="max-h-[min(50vh,420px)] overflow-auto">
-                  <Table>
+                <div className="max-h-[min(55vh,520px)] overflow-y-auto">
+                  <Table className="table-fixed w-full">
                     <TableHeader>
                       <TableRow>
-                        <TableHead className="w-12">Include</TableHead>
-                        <TableHead>Status</TableHead>
-                        <TableHead>Tracking</TableHead>
-                        <TableHead>Customer</TableHead>
-                        <TableHead>Phone</TableHead>
-                        <TableHead>City</TableHead>
-                        <TableHead>Pincode</TableHead>
-                        <TableHead>Existing match</TableHead>
+                        <TableHead className="w-11 whitespace-normal">
+                          <span className="sr-only">Include</span>
+                        </TableHead>
+                        <TableHead className="w-[150px] whitespace-normal">Status</TableHead>
+                        <TableHead className="w-[120px]">Tracking</TableHead>
+                        <TableHead className="w-[180px]">Customer</TableHead>
+                        <TableHead className="hidden w-[110px] lg:table-cell">Location</TableHead>
+                        <TableHead className="whitespace-normal">Existing match</TableHead>
                       </TableRow>
                     </TableHeader>
                     <TableBody>
@@ -702,21 +799,38 @@ export function AdminBulkUploadSheet({ callers, listContext }: AdminBulkUploadSh
                                 aria-label={`Include row ${item.index + 1}`}
                               />
                             </TableCell>
-                            <TableCell>
+                            <TableCell className="whitespace-normal align-top">
                               {item.duplicate?.isDuplicate ? (
-                                <Badge variant="secondary">
-                                  {formatDuplicateStatus(reasons)}
+                                <Badge
+                                  variant="outline"
+                                  className="h-auto max-w-full overflow-visible whitespace-normal rounded-md py-1 leading-snug"
+                                >
+                                  Duplicate · {formatDuplicateStatus(reasons)}
                                 </Badge>
                               ) : (
                                 <Badge variant="outline">New</Badge>
                               )}
                             </TableCell>
-                            <TableCell>{item.row.trackingNumber ?? "—"}</TableCell>
-                            <TableCell>{item.row.customerName}</TableCell>
-                            <TableCell>{item.row.customerPhone}</TableCell>
-                            <TableCell>{item.row.city}</TableCell>
-                            <TableCell>{item.row.postalCode}</TableCell>
-                            <TableCell className="max-w-[220px] text-xs text-muted-foreground">
+                            <TableCell className="truncate whitespace-nowrap" title={item.row.trackingNumber ?? undefined}>
+                              {item.row.trackingNumber ?? "—"}
+                            </TableCell>
+                            <TableCell>
+                              <div className="min-w-0">
+                                <p className="truncate font-medium" title={item.row.customerName}>
+                                  {item.row.customerName}
+                                </p>
+                                <p className="truncate text-xs text-muted-foreground" title={item.row.customerPhone}>
+                                  {item.row.customerPhone}
+                                </p>
+                                <p className="truncate text-xs text-muted-foreground lg:hidden">
+                                  {item.row.city} · {item.row.postalCode}
+                                </p>
+                              </div>
+                            </TableCell>
+                            <TableCell className="hidden truncate lg:table-cell">
+                              {item.row.city} · {item.row.postalCode}
+                            </TableCell>
+                            <TableCell className="whitespace-normal align-top">
                               {matches.length > 0 ? (
                                 <div className="space-y-1">
                                   {matches.slice(0, 2).map((match) => (
